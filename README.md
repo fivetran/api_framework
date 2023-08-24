@@ -24,7 +24,7 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 
 ## Example use cases:
 - Create new connectors
-- Create new connectors in multiple destinations (1:many)
+- Create new connectors in multiple destinations
 - Update connector settings
 - Certificate management
 - Delete connectors
@@ -35,7 +35,7 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 - Re-write SQL files
 
 
-## Example: api.interact.connection.status.py
+# Example: api.interact.connection.status.py
 
 This Python script is designed to interact with an API, specifically the Fivetran API, to retrieve and display the status of connectors. It uses the requests library to send HTTP requests and the colorama library to colorize the output.
 Step-by-step Breakdown
