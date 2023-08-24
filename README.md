@@ -77,4 +77,6 @@ Step-by-step Breakdown
         ctimeline  =  cdata_list['items']
     for c in ctimeline:
         print(Fore.MAGENTA + 'Type:' + c['service'] + Fore.BLUE + ' Status:' + c['status']['sync_state'] + Fore.YELLOW + ' Frequency:' + str(c['sync_frequency']))
-   
+
+## Example: api.interact.main.log.py
+ 
