@@ -1,7 +1,13 @@
 # Fivetran api_framework
 Fivetran API Python Script
 
-This script provides a simple way to interact with the Fivetran API using Python. It can be used to check connector details, pause connectors, or sync connectors.
+This script provides a simple way to interact with the Fivetran API using Python. It can be used to leverage information from any endpoint. Test out a few of the example use cases and determine the best path forward for automating Fivetran activity/monitoring.
+
+- The function atlas is a general-purpose function to interact with the Fivetran API. It takes three parameters: method, endpoint, and payload.
+- The method parameter determines the HTTP method to use (GET, POST, PATCH, DELETE). The endpoint parameter specifies the API endpoint to interact with. The payload parameter is used to send data in the case of POST or PATCH requests.
+- The function constructs the full URL for the API request, sets up the headers including the authorization, and makes the request using the requests library.
+- If the request is successful, it returns the JSON response. If the request fails, it prints an error message and returns None.
+- The function uses exception handling to catch any errors that occur during the request and to raise an exception if the HTTP status code indicates an error.
 
 ## To use the script, you will need to:
 
@@ -16,7 +22,7 @@ This script provides a simple way to interact with the Fivetran API using Python
 
 >python atlas.py PATCH connectors/my-connector-id paused=True
 
-## Other use cases include:
+## Example use cases:
 - Create new connectors
 - Create new connectors in multiple destinations (1:many)
 - Update connector settings
