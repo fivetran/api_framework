@@ -40,12 +40,12 @@ This Python script is designed to interact with an API, specifically the Fivetra
 Step-by-step Breakdown
 
 1. Import necessary libraries: The script begins by importing the necessary Python libraries. These include requests for making HTTP requests, json for handling JSON data, and colorama for colorizing the terminal output.
-```python
-    import requests
-    from requests.auth import HTTPBasicAuth
-    import json
-    import colorama
-    from colorama import Fore, Back, Style
+python
+import requests
+from requests.auth import HTTPBasicAuth
+import json
+import colorama
+from colorama import Fore, Back, Style
 
 3. Define the atlas function: This function is used to send HTTP requests to the Fivetran API. It takes three parameters: method (the HTTP method), endpoint (the API endpoint), and payload (the request body for POST and PATCH requests). It constructs the request, sends it, and returns the response as a JSON object.
 ```python
