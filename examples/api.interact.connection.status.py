@@ -4,8 +4,9 @@ import json
 import colorama
 from colorama import Fore, Back, Style
 
-#api_key = ''
-#api_secret = ''
+api_key = ''
+api_secret = ''
+a = HTTPBasicAuth(api_key, api_secret)
 
 #check status of connector and process x activity.
 
