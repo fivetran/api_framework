@@ -132,7 +132,7 @@ This function is used to make HTTP requests to the Fivetran API. It takes three 
 ## 3. Set up logging: 
 The script sets up a logger that writes to a file (api_framework.log). If the log file exceeds 10MB, it is overwritten. The logger is set to log INFO level messages and above. A rotating file handler is added to the logger, which keeps the last 3 log files when the current log file reaches 10MB.
   ```python
-     log_file = "/Users/elijahdavis/Documents/Code/api_framework.log"
+     log_file = "/api_framework.log"
      log_size = 10 * 1024 * 1024  # 10 MB
       
       #Check if the log file size exceeds 10MB
