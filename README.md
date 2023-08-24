@@ -10,7 +10,7 @@ This script provides a simple way to interact with the Fivetran API using Python
 - If the request is successful, it returns the JSON response. If the request fails, it prints an error message and returns None.
 - The function uses exception handling to catch any errors that occur during the request and to raise an exception if the HTTP status code indicates an error.
 
-## To use the script, you will need to:
+## To use the framework, you will need to:
 
 - Install libraries:
   - requests
