@@ -1,7 +1,6 @@
-# Fivetran api_framework
-Fivetran API Python Script
+# Fivetran API Python framework
 
-This script provides a simple way to interact with the Fivetran API using Python. It can be used to leverage information from any endpoint. Test out a few of the example use cases and determine the best path forward for automating Fivetran activity/monitoring.
+This framework provides a simple way to interact with the Fivetran API using Python. It can be used to leverage information from any endpoint. Test out a few of the example use cases and determine the best path forward for automating Fivetran activity/monitoring.
 
 ## Overview:
 - The function 'atlas' is a general-purpose function to interact with the Fivetran API. It takes three parameters: method, endpoint, and payload.
