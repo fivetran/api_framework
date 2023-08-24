@@ -157,7 +157,7 @@ The script constructs a request to the Fivetran API to pause a connector (identi
       response = atlas(method, endpoint, payload)
 ```
 ## 5. Handle the response: 
-The script calls the atlas function to send the request and get the response. If the response is not None, it prints the request details and response in different colors.
+The script calls the atlas function to send the request and get the response. If the response is not None, it prints the request details and response in different colors. In this example, we successfully paused a connector and logged the activity.
   ```python
       if response is not None:
       print(Fore.CYAN + 'Call: ' + method + ' ' + endpoint + ' ' + str(payload))
