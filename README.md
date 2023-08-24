@@ -32,6 +32,7 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 - Get a list of all connectors in a specific status
 - Create new destinations
 - Manage schema configurations
+- Pause or sync connectors and log the action(s).
 - Re-write SQL files
 
 # Example: api.interact.connection.status.py
