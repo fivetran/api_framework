@@ -24,17 +24,17 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 
 ## Example use cases:
 
-[Certificate Management](examples/api.interact.cert.management.py)
-[Create New Connector](examples/api.interact.create.connector.py)
-[Create New Connector in Multiple Destinations](examples/api.interact.one.connector.in.many.destinations.py)
-[Create new Destinations](examples/api.interact.new.group.destination.py)
-[Update Connector Settings](examples/api.interact.main.py)
-[Delete Connector](examples/api.interact.delete.connector.py)
-[Get Connector Status](examples/api.interact.connector.status.py)
-[Get a list of connectors in a specific status](examples/api.interact.connection.status.py)
-[Manage Schema Configurations](examples/api.interact.schema.edit.py)
-[Pause or sync connectors and log the action(s)](examples/api.interact.main.log.py)
-[Re-write SQL files](examples/api.interact.sql.writer.py)
+- [Certificate Management](examples/api.interact.cert.management.py)
+- [Create New Connector](examples/api.interact.create.connector.py)
+- [Create New Connector in Multiple Destinations](examples/api.interact.one.connector.in.many.destinations.py)
+- [Create new Destinations](examples/api.interact.new.group.destination.py)
+- [Update Connector Settings](examples/api.interact.main.py)
+- [Delete Connector](examples/api.interact.delete.connector.py)
+- [Get Connector Status](examples/api.interact.connector.status.py)
+- [Get a list of connectors in a specific status](examples/api.interact.connection.status.py)
+- [Manage Schema Configurations](examples/api.interact.schema.edit.py)
+- [Pause or sync connectors and log the action(s)](examples/api.interact.main.log.py)
+- [Re-write SQL files](examples/api.interact.sql.writer.py)
 
 # Example: api.interact.connection.status.py
 
