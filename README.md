@@ -23,17 +23,18 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 >python atlas.py PATCH connectors/my-connector-id paused=True
 
 ## Example use cases:
-- Create new connectors
-- Create new connectors in multiple destinations
-- Update connector settings
-- Certificate management
-- Delete connectors
-- Get connector status
-- Get a list of all connectors in a specific status
-- Create new destinations
-- Manage schema configurations
-- Pause or sync connectors and log the action(s).
-- Re-write SQL files
+
+[Certificate Management](examples/api.interact.cert.management.py)
+[Create New Connector](examples/api.interact.create.connector.py)
+[Create New Connector in Multiple Destinations](examples/api.interact.one.connector.in.many.destinations.py)
+[Create new Destinations](examples/api.interact.new.group.destination.py)
+[Update Connector Settings](examples/api.interact.main.py)
+[Delete Connector](examples/api.interact.delete.connector.py)
+[Get Connector Status](examples/api.interact.connector.status.py)
+[Get a list of connectors in a specific status](examples/api.interact.connection.status.py)
+[Manage Schema Configurations](examples/api.interact.schema.edit.py)
+[Pause or sync connectors and log the action(s)](examples/api.interact.main.log.py)
+[Re-write SQL files](examples/api.interact.sql.writer.py)
 
 # Example: api.interact.connection.status.py
 
