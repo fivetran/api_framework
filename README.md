@@ -78,7 +78,7 @@ Step-by-step Breakdown
   for c in ctimeline:
       print(Fore.MAGENTA + 'Type:' + c['service'] + Fore.BLUE + ' Status:' + c['status']['sync_state'] + Fore.YELLOW + ' Frequency:' + str(c['sync_frequency']))
 ```
-## Example: api.interact.main.log.py
+# Example: api.interact.main.log.py
 
 1. Import necessary modules: The script starts by importing necessary Python modules.
   ```python
