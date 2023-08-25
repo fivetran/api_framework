@@ -36,7 +36,7 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 - [Pause or Sync connectors and log the action(s)](examples/api_interact_main_log.py)
 - [Re-write SQL files](examples/api_interact_sql_writer.py)
 
-# Example: api.interact.connection.status.py
+# Example: api_interact_connection_status.py
 
 This Python script is designed to interact with an API, specifically the Fivetran API, to retrieve and display the status of connectors. It uses the requests library to send HTTP requests and the colorama library to colorize the output.
 Step-by-step Breakdown
@@ -85,7 +85,7 @@ Finally, the script checks if the response is not None, prints the request and r
   for c in ctimeline:
       print(Fore.MAGENTA + 'Type:' + c['service'] + Fore.BLUE + ' Status:' + c['status']['sync_state'] + Fore.YELLOW + ' Frequency:' + str(c['sync_frequency']))
 ```
-# Example: api.interact.main.log.py
+# Example: api_interact_main_log.py
 
 ## 1. Import necessary modules: 
   ```python
