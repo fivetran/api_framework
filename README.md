@@ -34,6 +34,7 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 - [Update Connector Settings](examples/api_interact_main.py)
 - [Delete Connector](examples/api_interact_delete_connector.py)
 - [Get Connector Status](examples/api_interact_connector_status.py)
+- [Get Connector Status using Cursor](examples/api_interact_status_cursor.py)
 - [Get a list of connectors in a specific status](examples/api_interact_connection_status.py)
 - [Manage Schema Configurations](examples/api_interact_schema_edit.py)
 - [Pause or Sync connectors and log the action(s)](examples/api_interact_main_log.py)
