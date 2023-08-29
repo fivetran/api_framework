@@ -24,6 +24,9 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 
 ## Example use cases:
 
+- [Create New User](examples/api_interact_new_user.py)
+- [Create New Team](examples/api_interact_new_team.py)
+- [Create New Group Webhook](examples/api_interact_new_group_webhook.py)
 - [Certificate Management](examples/api_interact_cert_mgmt.py)
 - [Create New Connector](examples/api_interact_create_connector.py)
 - [Create New Connector in Multiple Destinations](examples/api_interact_one_connector_in_many_destinations.py)
