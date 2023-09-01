@@ -98,6 +98,8 @@ Finally, the script checks if the response is not None, prints the request and r
       print(Fore.MAGENTA + 'Type:' + c['service'] + Fore.BLUE + ' Status:' + c['status']['sync_state'] + Fore.YELLOW + ' Frequency:' + str(c['sync_frequency']))
 ```
 # Example: api_interact_main_log.py
+This Python script is designed to interact with an API, specifically the Fivetran API, to pause a given connector and log the actions. It uses the requests library to send HTTP requests and the colorama library to colorize the output.
+Step-by-step Breakdown
 
 ## 1. Import necessary modules: 
   ```python
@@ -162,7 +164,7 @@ The script sets up a logger that writes to a file (api_framework.log). If the lo
 ## 4. Make a request: 
 The script constructs a request to the Fivetran API to pause a connector (identified by connector_id). The HTTP method is PATCH, the endpoint is connectors/{connector_id}, and the payload is {"paused": True}.
   ```python
-      connector_id = 'anesthetic_highlight'
+      connector_id = ''
       method = 'PATCH'  #'POST' 'PATCH' 'DELETE' 'GET'
       endpoint = 'connectors/' + connector_id 
       payload = {"paused": True}
