@@ -52,7 +52,7 @@ for new_schema in new_schema:
                 "paused": "true",
                 "pause_after_trial": "true",
                 "config": { "schema_prefix": new_schema,
-                            "host":  "ts-sqlserver-rds-ct-demo.cdlr2bxl5wn1.us-west-2.rds.amazonaws.com",
+                            "host":  "",
                             "port": 1433,
                             "database": "sqlserver",
                             "user": "fivetran",
