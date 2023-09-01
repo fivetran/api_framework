@@ -2,6 +2,14 @@
 
 This framework provides a simple way to interact with the Fivetran API using Python. It can be used to leverage information from any endpoint. Test out a few of the example use cases and determine the best path forward for automating Fivetran activity/monitoring.
 
+## Disclaimer:
+ This framework is intended to help consumers better understand the Fivetran API. It can be used as a 'jumping off point' for custom solutions that a organization may require.
+
+## Resources:
+- [Fivetran API Docs](https://fivetran.com/docs/rest-api)
+- [Postman Collection](https://fivetran.com/docs/rest-api/api-tools#fivetranpostmancollection)
+- [REST API FAQs](https://fivetran.com/docs/rest-api/faq)
+
 ## Overview:
 - The function 'atlas' is a general-purpose function to interact with the Fivetran API. It takes three parameters: method, endpoint, and payload.
 - The method parameter determines the HTTP method to use (GET, POST, PATCH, DELETE). The endpoint parameter specifies the API endpoint to interact with. The payload parameter is used to send data in the case of POST or PATCH requests.
