@@ -37,6 +37,7 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 - [Create New Group Webhook](examples/api_interact_new_group_webhook.py)
 - [Certificate Management](examples/api_interact_cert_mgmt.py)
 - [Create New Connector](examples/api_interact_create_connector.py)
+- [Resync Table](examples/api_interact_table_sync.py)
 - [Create New Connector in Multiple Destinations](examples/api_interact_one_connector_in_many_destinations.py)
 - [Create New Destinations](examples/api_interact_new_group_destination.py)
 - [Update Connector Settings](examples/api_interact_main.py)
