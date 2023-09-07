@@ -183,4 +183,4 @@ The script calls the atlas function to send the request and get the response. If
 ```
 
 ## Questions?
-[Reach out to our expert services team.](https://go.fivetran.com/demo/services?_gl=1*18htro9*_ga*MTUxNDcyNDcxMy4xNjY5OTA2MDg3*_ga_NE72Z5F3GB*MTY5NDA5OTIzNC4xMDU1LjEuMTY5NDA5OTc1MC40NC4wLjA.) 
+[Book a consultation with a Fivetran Services expert.](https://go.fivetran.com/demo/services?_gl=1*18htro9*_ga*MTUxNDcyNDcxMy4xNjY5OTA2MDg3*_ga_NE72Z5F3GB*MTY5NDA5OTIzNC4xMDU1LjEuMTY5NDA5OTc1MC40NC4wLjA.) 
