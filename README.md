@@ -184,3 +184,10 @@ The script calls the atlas function to send the request and get the response. If
 
 ## Questions?
 [Book a consultation with a Fivetran Services expert.](https://go.fivetran.com/demo/services?_gl=1*18htro9*_ga*MTUxNDcyNDcxMy4xNjY5OTA2MDg3*_ga_NE72Z5F3GB*MTY5NDA5OTIzNC4xMDU1LjEuMTY5NDA5OTc1MC40NC4wLjA.) 
+
+
+
+
+## Credits 
+This solution was written by: Elijah Davis
+Special Thanks: Jimmy Hooker
