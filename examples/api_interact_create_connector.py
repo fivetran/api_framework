@@ -45,8 +45,8 @@ def atlas(method, endpoint, payload):
         return None
 
 #Request
-p = ''                     #source auth
-destination = ''          #destination ID
+p = y['T']                #source auth
+destination = y['D']          #destination ID
 new_schema = ["s_011", "s_012","s_013"]        #new schema name(s)
 method = 'POST'                 #'PATCH' 'GET' 'DELETE'
 endpoint = 'connectors/'
