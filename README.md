@@ -1,6 +1,6 @@
 # Fivetran API Python framework
 
-This framework provides a simple way to interact with the Fivetran API using Python. It can be used to leverage information from any endpoint. Test out a few of the example use cases and determine the best path forward for automating Fivetran activity/monitoring.
+This framework provides a simple way to interact with the Fivetran API using Python. You can interact with the Fivetran REST API using Python to facilitate automation workflows. Test out a few of the example use cases and determine the best path forward for automating Fivetran activity/monitoring.
 
 ## Disclaimer:
  This framework is intended to help consumers better understand the Fivetran API. It can be used as a 'jumping off point' for custom solutions that a organization may require.
@@ -26,10 +26,6 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 - Set the api_key and api_secret variables to your Fivetran API credentials.
 - Run the script with the desired method, endpoint, and payload.
 
-## For example, to pause a connector, you would run the script like this:
-
->python atlas.py PATCH connectors/my-connector-id paused=True
-
 ## Example use cases:
 
 - [Create New User](examples/api_interact_new_user.py)
@@ -40,6 +36,7 @@ This framework provides a simple way to interact with the Fivetran API using Pyt
 - [Resync Table](examples/api_interact_table_sync.py)
 - [Create New Connector in Multiple Destinations](examples/api_interact_one_connector_in_many_destinations.py)
 - [Create New Destinations](examples/api_interact_new_group_destination.py)
+- [Run a dbt Transformation](examples/api_interact_run_transformation.py)
 - [Update Connector Settings](examples/api_interact_main.py)
 - [Delete Connector](examples/api_interact_delete_connector.py)
 - [Get Connector Status](examples/api_interact_connector_status.py)
