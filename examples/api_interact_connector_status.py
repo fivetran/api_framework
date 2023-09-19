@@ -4,6 +4,15 @@ import json
 import colorama
 from colorama import Fore, Back, Style
 
+#configuration file for key,secret,params,etc.
+#r = 'config.json'
+#with open(r, "r") as i:
+#    l = i.read()
+#    y = json.loads(l)
+#api_key = y['API_KEY']
+#api_secret = y['API_SECRET']
+#a = HTTPBasicAuth(api_key, api_secret)
+
 api_key = ''
 api_secret = ''
 a = HTTPBasicAuth(api_key, api_secret)
@@ -21,7 +30,6 @@ def atlas(method, endpoint, payload):
     try:
         if method == 'GET':
             response = requests.get(url, headers=h, auth=a)
-            print(response)
         elif method == 'POST':
             response = requests.post(url, headers=h, json=payload, auth=a)
         elif method == 'PATCH':
