@@ -19,7 +19,7 @@ a = HTTPBasicAuth(api_key, api_secret)
 
 #check status of connector and process x activity.
 
-def atlas(method, endpoint, payload):
+def atlas(method, endpoint, payload=None):
 
     base_url = 'https://api.fivetran.com/v1'
     h = {
@@ -50,7 +50,7 @@ def atlas(method, endpoint, payload):
 connector_id = ''
 method = 'GET'
 endpoint = 'connectors/' + connector_id 
-payload = ''
+payload = None
 
 #Submit
 response = atlas(method, endpoint, payload)
