@@ -17,7 +17,7 @@ api_key = ''
 api_secret = ''
 a = HTTPBasicAuth(api_key, api_secret)
 
-def atlas(method, endpoint, payload):
+def atlas(method, endpoint, payload=None):
     
     # Base URL for the Fivetran API
     base_url = 'https://api.fivetran.com/v1'
