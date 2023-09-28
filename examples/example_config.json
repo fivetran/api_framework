@@ -1,10 +1,79 @@
 {
-"API_KEY":"",
-"API_SECRET":"",
-"SPW":"", 
-"D":"",
-"OC":"",
-"NS": "",
-"ALIAS":"",
-"T":""
+	"fivetran": {
+		"api_key": "",
+		"api_secret": ""
+	},
+	"group": {
+		"name": "REST_API_DEMO"
+	},
+	"destination": {
+    	"service": "big_query",
+    	"region": "US",
+    	"time_zone_offset": "-5",
+    	"config" : {
+      		"project_id": "sales",
+      		"data_set_location": "US",
+      		"secret_key": {
+				"type": "service_account",
+				"project_id": "",
+				"private_key_id": "",
+				"private_key": "",
+				"client_email": "m",
+				"client_id": "",
+				"auth_uri": "",
+				"token_uri": "n",
+				"auth_provider_x509_cert_url": "",
+				"client_x509_cert_url": ""
+			}
+    	}
+	},
+	"webhook": {
+		"url": "",
+		"events": [
+			"connection_successful",
+			"connection_failure",
+			"create_connector",
+			"pause_connector",
+			"resume_connector",
+			"edit_connector",
+			"delete_connector",
+			"force_update_connector",
+			"resync_connector",
+			"resync_table"
+		]
+	},
+	"connector": {
+		"databases": [
+			"t_400",
+			"t_401",
+			"t_402"
+		],
+		"payload": {
+			"service": "sql_server_rds",
+			"trust_certificates": "true",
+			"run_setup_tests": "true",
+			"paused": "false",
+			"pause_after_trial": "true",
+			"config": { 
+				"host":  "",
+				"port": 1433,
+				"user": "fivetran",
+				"password": ""
+			}
+		},
+		"schema": {
+			"enabled": true,
+			"tables": {
+				"teams": {
+					"enabled": false
+				},
+				"payroll": {
+					"enabled": false
+				},
+				"recruiting": {
+					"enabled": false
+				}
+			}
+		}
+	}
 }
