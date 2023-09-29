@@ -187,4 +187,4 @@ The script calls the atlas function to send the request and get the response. If
 
 ## Credits 
 - This solution was written by: Elijah Davis
-- Special Thanks: Jimmy Hooker
+- Special Thanks: Angel Hernandez & Jimmy Hooker
