@@ -46,8 +46,8 @@ def atlas(method, endpoint, payload):
         return None
 
 #Request to get connector details from a given group
-group_id = 'restlessness_extrinsic'  #00
-new_group = 'switch_incision'        #005
+group_id = ''  #00
+new_group = ''        #005
 method = 'GET'  #'POST' 'PATCH' 'DELETE'
 endpoint = 'groups/' + group_id + '/connectors' 
 payload = ''
