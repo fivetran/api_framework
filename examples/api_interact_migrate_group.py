@@ -17,7 +17,7 @@ a = HTTPBasicAuth(api_key, api_secret)
 #api_secret = ''
 #a = HTTPBasicAuth(api_key, api_secret)
 
-#Copy a Connector
+#Copy Connectors in a Group to a New Group
 def atlas(method, endpoint, payload):
 
     base_url = 'https://api.fivetran.com/v1'
