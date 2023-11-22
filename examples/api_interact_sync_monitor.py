@@ -18,7 +18,7 @@ a = HTTPBasicAuth(api_key, api_secret)
 #api_secret = ''
 #a = HTTPBasicAuth(api_key, api_secret)
 
-#new SQL server connector (n times)
+#monitor connector status, activate, sync
 
 def atlas(method, endpoint, payload):
 
