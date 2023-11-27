@@ -64,7 +64,7 @@ print(updated_day)
 method = 'GET'
 endpoint = 'connectors/' + y['fivetran']['c']
 payload = ''
-t = {"config":{"pattern": str(updated_day) + "-\\d{6}.csv}"}}
+t = {"config":{"pattern": str(updated_day) + "-\\d{6}.csv"}}
 
 #Submit
 response = atlas(method, endpoint, payload)
