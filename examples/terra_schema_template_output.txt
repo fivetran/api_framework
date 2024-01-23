@@ -1,0 +1,18 @@
+schema {
+    name = "agriculture"
+    table {
+        name = "california_wine_production"
+        enabled = "true"
+    }
+    table {
+        name = "coffee_prices"
+        enabled = "true"
+    }
+}
+schema {
+    name = "energy"
+    table {
+        name = "commodity_prices"
+        enabled = "true"
+    }
+}
