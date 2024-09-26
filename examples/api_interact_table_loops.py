@@ -4,6 +4,12 @@ import json
 import time
 import csv
 
+# Description:
+# This script interacts with the Fivetran API to update the schema of a connector with table names
+# read from a CSV file. It processes the tables in batches, updating the schema, triggering a sync,
+# and waiting for the sync to complete for each batch. The script uses configuration details from
+# a JSON file for authentication and connector information.
+
 # Configuration
 CONFIG_FILE = '/config.json'
 CSV_FILE = '/table_names.csv'
