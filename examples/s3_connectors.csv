@@ -1,0 +1,6 @@
+schema_name,table_name,pattern
+sales,transactions,^sample-customer-data\.csv$
+marketing,campaigns,^sample-marketing-data\.csv$
+finance,reports,^sample-finance-data\.csv$
+operations,inventory,^sample-inventory-data\.csv$
+test,data,^TestCSVFile\d{8}\.csv$
