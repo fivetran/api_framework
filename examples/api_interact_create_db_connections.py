@@ -11,7 +11,7 @@ import sys
 
 
 #configuration file
-r = '/Users/elijah.davis/Documents/config.json'
+r = '/config.json'
 with open(r, "r") as i:
     l = i.read()
     y = json.loads(l)
