@@ -41,7 +41,7 @@ cd code/api/fivetran
 
 2. Run the script:
 ```bash
-python api_interact_state.py
+python api_interact_state_mgmt.py
 ```
 
 3. Follow the interactive prompts:
