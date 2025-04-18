@@ -3,7 +3,7 @@
 ## Overview
 This tool provides a secure and user-friendly interface for managing Fivetran connection states through their REST API. It allows users to safely pause connections, update their state, and resume operations with proper error handling and verification steps.
 
-- [Code](examples/api_interact_state_mgmt.py)
+- [Code](api_interact_state_mgmt.py)
 
 ## Features
 - Secure API authentication using Basic Auth
