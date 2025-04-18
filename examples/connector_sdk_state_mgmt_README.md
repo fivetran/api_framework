@@ -27,8 +27,8 @@ This tool provides a secure and user-friendly interface for managing Fivetran co
 ```json
 {
     "fivetran": {
-        "api_key_demo_sand": "your_api_key",
-        "api_secret_demo_sand": "your_api_secret"
+        "api_key": "your_api_key",
+        "api_secret": "your_api_secret"
     }
 }
 ```
