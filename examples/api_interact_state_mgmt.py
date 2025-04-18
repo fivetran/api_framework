@@ -13,7 +13,7 @@ api_key = y['fivetran']['api_key']
 api_secret = y['fivetran']['api_secret']
 
 
-#
+# README https://github.com/fivetran/api_framework/blob/main/examples/connector_sdk_state_mgmt_README.md
 
 # Atlas function for API interactions
 def atlas(method, endpoint, payload=None):
