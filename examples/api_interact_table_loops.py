@@ -72,7 +72,10 @@ def wait_for_sync_completion():
         time.sleep(120)  # Check every x minute
 
 def update_schema(table_names):
+    #Before 02/2025
     endpoint = f'connectors/{connector_id}/schemas/{config["fivetran"]["schema"]}'
+    #After 02/2025
+    # endpoint = f'connections/{connectionId}/schemas/{config["fivetran"]["schema"]}'
     payload = {
         "enabled": True,
         "tables": {table: {"enabled": True} for table in table_names}
