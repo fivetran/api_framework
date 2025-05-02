@@ -50,7 +50,8 @@ connector_id = ''
 # Before 02/2025
 endpoint = 'connectors/'+ connector_id +'/schemas/reload' 
 # After 02/2025
-endpoint = 'connections/'+ connectionId +'/schemas/reload' 
+# connection_id = '' 
+# endpoint = 'connections/'+ connection_id +'/schemas/reload' 
 payload = {"exclude_mode": "PRESERVE"}
 
 #Submit
