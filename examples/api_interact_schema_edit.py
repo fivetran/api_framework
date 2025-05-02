@@ -55,7 +55,10 @@ connector_id = ''
 group_id = ''
 schema = ''
 method = 'PATCH'  #'POST' 'PATCH' 'GET'
+# Before 02/2025
 endpoint = 'connectors/' + connector_id + '/schemas/'+ schema 
+# After 02/2025
+endpoint = 'connections/' + connectionId + '/schemas/'+ schema 
 #PATCH https://api.fivetran.com/v1/connectors/{connector_id}/schemas/{schema}
 payload = {
         "enabled": True,
