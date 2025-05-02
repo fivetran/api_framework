@@ -21,7 +21,10 @@ with open(CONFIG_FILE, "r") as config_file:
 
 api_key = config['api_key']
 api_secret = config['api_secret']
+# Before 02/2025
 connector_id = config['connector_id']
+# After 02/2025
+# connection_id = config['connection_id']
 auth = HTTPBasicAuth(api_key, api_secret)
 
 def make_request(method, endpoint, payload=None):
@@ -75,7 +78,7 @@ def update_schema(table_names):
     #Before 02/2025
     endpoint = f'connectors/{connector_id}/schemas/{config["fivetran"]["schema"]}'
     #After 02/2025
-    # endpoint = f'connections/{connectionId}/schemas/{config["fivetran"]["schema"]}'
+    # endpoint = f'connections/{connection_id}/schemas/{config["fivetran"]["schema"]}'
     payload = {
         "enabled": True,
         "tables": {table: {"enabled": True} for table in table_names}
