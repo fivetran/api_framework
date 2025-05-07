@@ -60,7 +60,7 @@ endpoint = 'connectors/' + connector_id + '/schemas/'+ schema
 # After 02/2025
 # connection_id = ''
 #endpoint = 'connections/' + connection_id + '/schemas'
-#PATCH https://api.fivetran.com/v1/connectors/{connector_id}/schemas
+#PATCH https://api.fivetran.com/v1/connectors/{connection_id}/schemas
 
 # Before 02/2025
 payload = {
