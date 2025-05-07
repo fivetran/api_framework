@@ -59,8 +59,10 @@ method = 'PATCH'  #'POST' 'PATCH' 'GET'
 endpoint = 'connectors/' + connector_id + '/schemas/'+ schema 
 # After 02/2025
 # connection_id = ''
-# endpoint = 'connections/' + connection_id + '/schemas/'+ schema 
-#PATCH https://api.fivetran.com/v1/connectors/{connector_id}/schemas/{schema}
+#endpoint = 'connections/' + connection_id + '/schemas'
+#PATCH https://api.fivetran.com/v1/connectors/{connector_id}/schemas
+
+# Before 02/2025
 payload = {
         "enabled": True,
         "tables": {
@@ -69,6 +71,27 @@ payload = {
             }
         }
 } 
+
+# After 02/2025
+#V2
+# payload = {
+#     "schemas": {"covid19": {
+#             "enabled": False,
+#             "tables": {"anomalies": {
+#                     "enabled": False
+#                 }
+#         },
+#         "colleges": {
+#             "enabled": False,
+#             "tables": {"anomalies": {
+#                     "enabled": False
+#                 }
+#         }        
+#         },
+#     "schema_change_handling": "BLOCK_ALL"
+#             }
+#         }
+#     }
 
 response = atlas(method, endpoint, payload)
 
