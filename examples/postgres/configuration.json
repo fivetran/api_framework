@@ -1,0 +1,11 @@
+{
+   "driver": "",
+   "host":"localhost",
+   "port":"5432",
+   "database":"postgres",
+   "username":"fivetran",
+   "password":"",
+   "table_filters": "{}",
+   "region": "abc",
+   "output_file": "database_metadata.jsonl"
+}
