@@ -1,0 +1,2 @@
+pyodbc==5.1.0
+diagrams==0.24.4
