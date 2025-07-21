@@ -24,13 +24,18 @@ import requests
 import json
 import base64
 from colorama import Fore, Style
+import os
+
+# Set this to True to save connector types to a JSON file
+SAVE_TO_JSON = True
+JSON_FILENAME = '/connector_types.json'
 
 # Load API credentials from config.json
 config_path = '/config.json'
 with open(config_path, 'r') as f:
     config = json.load(f)
-api_key = config['fivetran']['api_key_demo_sand']
-api_secret = config['fivetran']['api_secret_demo_sand']
+api_key = config['fivetran']['api_key']
+api_secret = config['fivetran']['api_secret']
 
 def fivetran_request(method, endpoint, params=None, payload=None):
     """
@@ -92,6 +97,13 @@ def main():
     print(Fore.GREEN + f'\nTotal connector types found: {len(all_items)}' + Style.RESET_ALL)
     for item in all_items:
         print(Fore.CYAN + f"- {item.get('name', 'Unknown')} (ID: {item.get('id', 'N/A')})" + Style.RESET_ALL)
+
+    # Optionally save to JSON file as {id: name}
+    if SAVE_TO_JSON:
+        id_name_dict = {item.get('id', 'N/A'): item.get('name', 'Unknown') for item in all_items}
+        with open(JSON_FILENAME, 'w') as f:
+            json.dump(id_name_dict, f, indent=2)
+        print(Fore.MAGENTA + f"\nConnector types saved to {os.path.abspath(JSON_FILENAME)}" + Style.RESET_ALL)
 
 if __name__ == '__main__':
     main()
