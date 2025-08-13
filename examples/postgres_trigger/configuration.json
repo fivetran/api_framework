@@ -1,0 +1,11 @@
+{
+    "postgres_host": "localhost",
+    "postgres_port": "5432",
+    "postgres_database": "postgres",
+    "postgres_user": "fivetran",
+    "postgres_password": "",
+    "fivetran_api_key": "",
+    "fivetran_api_secret": "",
+    "fivetran_connector_id": "",
+    "freshness_query": "SELECT company_id, company_name, last_update_time, CASE WHEN last_update_time < NOW() - INTERVAL '24 hours' THEN 'Stale data' ELSE 'Fresh data' END as freshness_status FROM customer_data WHERE active = true"
+  }
