@@ -4,7 +4,7 @@ This repository contains an example Fivetran connector that monitors data freshn
 
 ## Overview
 
-Both connectors perform the same workflow:
+The workflow:
 1. Connect to a source database (Snowflake or PostgreSQL)
 2. Execute a configurable data freshness query
 3. Analyze the results to determine if data is stale
@@ -88,7 +88,7 @@ graph TB
 
 ### Prerequisites
 - Python 3.7+
-- Access to source database (Snowflake or PostgreSQL)
+- Access to database (PostgreSQL for this demo)
 - Fivetran API credentials
 - Fivetran connector ID to monitor
 
@@ -152,9 +152,6 @@ graph TB
    SELECT * FROM get_freshness_summary();
    ```
 
-#### Snowflake Setup
-1. **Create the necessary tables and test data in Snowflake**
-2. **Ensure your user has appropriate permissions**
 
 ## Usage
 
@@ -190,7 +187,33 @@ Your freshness query must return results with at least these columns:
 - `company_id` (or similar identifier)
 - `freshness_status` with values "Stale data" or "Fresh data"
 
-### Example PostgreSQL Query (from `setup_postgres.sql`)
+## Output Tables
+
+The connector creates two destination tables:
+
+### 1. `data_freshness_monitor`
+- Contains all records from the freshness query
+- Includes metadata about sync decisions
+- Primary key: `check_timestamp`, `company_id`
+
+### 2. `sync_events`
+- Tracks all sync trigger attempts
+- Records success/failure status
+- Primary key: `event_timestamp`, `connector_id`
+
+## Customization
+
+### Threshold Adjustment
+Modify the stale data threshold in the `analyze_freshness_data` function in `connector.py`:
+```python
+# Currently set to 10% - adjust as needed
+sync_needed = stale_percentage > 10
+```
+
+### Freshness Logic
+Customize the freshness determination logic in your SQL query or modify the analysis function in `connector.py`.
+
+## Demo and Testing
 ```sql
 -- Create the customer_data table that will be monitored for freshness
 CREATE TABLE IF NOT EXISTS customer_data (
@@ -233,45 +256,6 @@ SELECT
 FROM customer_data 
 WHERE active = true
 ```
-
-
-## Output Tables
-
-The connector creates two destination tables:
-
-### 1. `data_freshness_monitor`
-- Contains all records from the freshness query
-- Includes metadata about sync decisions
-- Primary key: `check_timestamp`, `company_id`
-
-### 2. `sync_events`
-- Tracks all sync trigger attempts
-- Records success/failure status
-- Primary key: `event_timestamp`, `connector_id`
-
-## Customization
-
-### Threshold Adjustment
-Modify the stale data threshold in the `analyze_freshness_data` function in `connector.py`:
-```python
-# Currently set to 10% - adjust as needed
-sync_needed = stale_percentage > 10
-```
-
-### Freshness Logic
-Customize the freshness determination logic in your SQL query or modify the analysis function in `connector.py`.
-
-## Demo and Testing
-
-### Using `setup_postgres.sql`
-The `setup_postgres.sql` file provides a complete testing environment:
-
-1. **Sample Data**: Creates 10 customer records with varying freshness states
-2. **Helper Functions**: 
-   - `update_random_customer()` - Simulates data updates
-   - `get_freshness_summary()` - Provides freshness statistics
-3. **Views**: `data_freshness_status` for easy monitoring
-4. **Triggers**: Automatic timestamp updates
 
 ### Testing the Connector
 ```bash
