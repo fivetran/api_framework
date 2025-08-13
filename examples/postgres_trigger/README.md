@@ -1,6 +1,6 @@
 # Data Freshness Monitor and Fivetran Sync Trigger Connectors
 
-This repository contains two Fivetran connector implementations that monitor data freshness in your source databases and automatically trigger Fivetran syncs when data becomes stale.
+This repository contains an example Fivetran connector that monitors data freshness in your source databases and automatically trigger Fivetran syncs when data becomes stale.
 
 ## Overview
 
