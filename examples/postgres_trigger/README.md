@@ -5,7 +5,7 @@ This repository contains an example Fivetran connector that monitors data freshn
 ## Overview
 
 The workflow:
-1. Connect to a source database (Snowflake or PostgreSQL)
+1. Connect to a source database (PostgreSQL)
 2. Execute a configurable data freshness query
 3. Analyze the results to determine if data is stale
 4. Automatically trigger a Fivetran connector sync if stale data is detected
@@ -97,8 +97,6 @@ graph TB
 1. **Clone or download the connector files**
 2. **Install dependencies:**
    ```bash
-   # For Snowflake connector
-   pip install -r requirements.txt
    
    # For PostgreSQL connector
    pip install -r requirements_postgres.txt
@@ -107,8 +105,7 @@ graph TB
 ### Configuration
 
 1. **Copy the appropriate configuration file:**
-   - `configuration.json` for Snowflake
-   - `configuration_postgres.json` for PostgreSQL
+   - `configuration.json` for PostgreSQL
 
 2. **Update the configuration with your values:**
    ```json
