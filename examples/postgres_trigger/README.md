@@ -141,12 +141,7 @@ graph TB
    ```sql
    -- Check test data
    SELECT * FROM customer_data ORDER BY last_update_time DESC;
-   
-   -- Check freshness status
-   SELECT * FROM data_freshness_status;
-   
-   -- Get summary
-   SELECT * FROM get_freshness_summary();
+
    ```
 
 
