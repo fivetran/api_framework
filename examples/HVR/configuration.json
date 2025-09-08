@@ -1,0 +1,6 @@
+{
+"prefix":"production_db",
+"suffix":"a_value",
+"schema":"SALES",
+"file_path":"/hvr/Export_Channels_test_ch2_2025-09-04T201644.json"
+}
