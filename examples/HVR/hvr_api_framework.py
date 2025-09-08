@@ -70,7 +70,7 @@ import time
 urllib3.disable_warnings()
 
 #configuration file for key,secret,params,etc.
-r = '/config.json'
+r = '/configuration.json'
 with open(r, "r") as i:
     l = i.read()
     y = json.loads(l)
