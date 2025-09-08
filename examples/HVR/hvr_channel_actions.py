@@ -1,7 +1,7 @@
 import json
 
 # Load configuration from config.json
-with open('/config.json', 'r') as config_file:
+with open('/configuration.json', 'r') as config_file:
     config = json.load(config_file)
 
 
