@@ -1,6 +1,125 @@
 # HVR API Client Tool
 
-A comprehensive Python client for interacting with [HVR API](https://fivetran.com/docs/hvr6/rest-api). This tool provides easy-to-use methods for managing HVR hubs, channels, locations, and data replication workflows.
+A comprehensive Python client for interacting with HVR (High Volume Replicator) APIs. This tool provides easy-to-use methods for managing HVR hubs, channels, locations, and data replication workflows.
+
+## 🏗️ Architecture Overview
+
+```mermaid
+graph TB
+    %% User Interfaces and Entry Points
+    subgraph "User Interfaces"
+        CLI[Command Line Interface]
+        IDE[IDE Integration<br/>VS Code, PyCharm]
+        REPL[Python REPL]
+        CI[CI/CD Pipelines]
+    end
+
+    %% Core Application Layer
+    subgraph "HVR API Client Tool"
+        direction TB
+        Auth[Authentication Manager<br/>Token Management]
+        Client[HVRAPIClient<br/>Core API Interface]
+        
+        subgraph "Core Methods"
+            ChannelMgmt[Channel Management<br/>CRUD Operations]
+            HubMgmt[Hub Management<br/>State Control]
+            DataOps[Data Operations<br/>Refresh & Monitoring]
+        end
+        
+        subgraph "Workflow Automation"
+            Migration[Environment Migration]
+            Backup[Configuration Backup]
+            Monitoring[Real-time Monitoring]
+            BatchOps[Batch Operations]
+        end
+        
+        subgraph "Validation & Extensions"
+            Validation[Config Validation]
+            Extensions[Custom Extensions]
+            ErrorHandling[Error Handling]
+        end
+    end
+
+    %% Configuration and Data Layer
+    subgraph "Configuration Layer"
+        Config[config.json<br/>Credentials & Settings]
+        BackupFiles[Backup Files<br/>JSON Configurations]
+        Templates[Channel Templates]
+    end
+
+    %% HVR Infrastructure
+    subgraph "HVR Infrastructure"
+        direction TB
+        HVRHub[HVR Hub<br/>Central Management]
+        
+        subgraph "Channels & Locations"
+            Channels[Channels<br/>Data Pipelines]
+            Locations[Locations<br/>Source & Target]
+            Tables[Tables<br/>Data Objects]
+        end
+        
+        subgraph "Data Flow"
+            Capture[Capture Actions<br/>Data Extraction]
+            Integrate[Integrate Actions<br/>Data Loading]
+            Refresh[Refresh Jobs<br/>Data Synchronization]
+        end
+    end
+
+    %% External Systems
+    subgraph "External Systems"
+        SourceDB[(Source Databases<br/>Oracle, SQL Server, etc.)]
+        TargetDB[(Target Databases<br/>Data Warehouses)]
+        CloudStorage[(Cloud Storage<br/>S3, Azure, GCP)]
+    end
+
+    %% Data Flow Connections
+    CLI --> Client
+    IDE --> Client
+    REPL --> Client
+    CI --> Client
+    
+    Client --> Auth
+    Auth --> Config
+    Client --> ChannelMgmt
+    Client --> HubMgmt
+    Client --> DataOps
+    
+    ChannelMgmt --> Migration
+    HubMgmt --> Monitoring
+    DataOps --> Backup
+    
+    Migration --> Validation
+    Backup --> BackupFiles
+    Monitoring --> Extensions
+    
+    Client --> HVRHub
+    HVRHub --> Channels
+    HVRHub --> Locations
+    Channels --> Tables
+    
+    Channels --> Capture
+    Channels --> Integrate
+    DataOps --> Refresh
+    
+    Capture --> SourceDB
+    Integrate --> TargetDB
+    Refresh --> CloudStorage
+
+    %% Styling
+    classDef userInterface fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef coreComponent fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef workflow fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    classDef config fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef hvrInfra fill:#fce4ec,stroke:#880e4f,stroke-width:2px
+    classDef external fill:#f1f8e9,stroke:#33691e,stroke-width:2px
+
+    class CLI,IDE,REPL,CI userInterface
+    class Auth,Client,ChannelMgmt,HubMgmt,DataOps coreComponent
+    class Migration,Backup,Monitoring,BatchOps,Validation,Extensions,ErrorHandling workflow
+    class Config,BackupFiles,Templates config
+    class HVRHub,Channels,Locations,Tables,Capture,Integrate,Refresh hvrInfra
+    class SourceDB,TargetDB,CloudStorage external
+```
 
 ## 🎯 What This Tool Solves
 
@@ -59,6 +178,54 @@ Create a `config.json` file in your working directory:
   }
 }
 ```
+
+### Test From the Terminal (CLI)
+
+Follow these steps to run and test the framework from your shell:
+
+1. Create and activate a virtual environment (recommended):
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+```
+
+2. Install dependencies:
+```bash
+pip install requests urllib3
+```
+
+3. Ensure your `config.json` exists at `path_to/hvr_folder/config.json` (default path used by the script). If your file is elsewhere, update the `r` variable in `hvr_api_frame.py` accordingly.
+
+4. Run the client end-to-end:
+```bash
+python /path_to/hvr_api_frame.py
+```
+
+5. Optional: Run with warnings suppressed for self-signed TLS (already disabled in code), and with debug logs:
+```bash
+PYTHONWARNINGS="ignore:Unverified HTTPS request" python -X dev /path_to/hvr_api_frame.py
+```
+
+6. Try interactive testing in a Python REPL:
+```bash
+python
+```
+```python
+import json
+from hvr_api_frame import HVRAPIClient, test_authentication
+
+cfg = json.load(open('path_to/hvr_folder/config.json'))
+token = test_authentication(cfg['fivetran']['username'], cfg['fivetran']['password'], cfg['fivetran']['base_url'])
+client = HVRAPIClient(cfg['fivetran']['base_url'], cfg['fivetran']['username'], cfg['fivetran']['password'], token)
+
+print(client.get_hub_status('hvrhub'))
+```
+
+7. Run specific use cases by uncommenting blocks in `hvr_api_frame.py` (e.g., hub freeze/unfreeze, refresh-and-poll). Then re-run step 4.
+
+8. Common CLI issues:
+- 401/403: verify credentials and permissions in `config.json`.
+- 404: check hub, channel names, or base URL in `config.json`.
+- Network/TLS: confirm host/port reachability and certificates.
 
 ## 📖 Use Cases
 
@@ -346,6 +513,51 @@ Enable detailed logging by adding:
 import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
+
+### IDE Setup and Debugging
+
+Run and debug `hvr_api_frame.py` from your preferred IDE.
+
+#### VS Code
+1. Open the folder: `path_to/hvr_folder/`.
+2. Select the Python interpreter for your project (bottom-right status bar) or run:
+   - Command Palette → "Python: Select Interpreter" → choose `.venv` if created.
+3. Create a run configuration (if not auto-created):
+   - Run and Debug → create `launch.json` for Python with:
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run HVR API Client",
+      "type": "python",
+      "request": "launch",
+      "program": "/path_to/hvr_folder/hvr_api_frame.py",
+      "console": "integratedTerminal",
+      "cwd": "/path_to/hvr_folder/hvr",
+      "env": {
+        "PYTHONWARNINGS": "ignore:Unverified HTTPS request"
+      }
+    }
+  ]
+}
+```
+4. Set breakpoints in `hvr_api_frame.py` (e.g., near `test_authentication`, `get_hub_status`).
+5. Click Run to debug.
+
+#### PyCharm
+1. Open the project directory: `path_to/hvr_folder/`.
+2. Configure Python interpreter (Project Settings → Python Interpreter) and install `requests`, `urllib3`.
+3. Create a Run/Debug Configuration:
+   - Script path: `path_to/hvr_folder/hvr_api_frame.py`
+   - Working directory: `path_to/hvr_folder`
+   - Environment variables (optional): `PYTHONWARNINGS=ignore:Unverified HTTPS request`
+4. Set breakpoints and Run/Debug.
+
+#### Running Specific Workflows in IDE
+- Uncomment the relevant "Use Case" blocks in `hvr_api_frame.py` (e.g., hub status/freeze/unfreeze, refresh and poll).
+- Update channel names, locations, or hub names inline as needed.
+- Re-run your configuration to execute only those scenarios.
 
 ## 📚 Additional Resources
 
