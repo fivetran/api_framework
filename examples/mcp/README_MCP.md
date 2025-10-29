@@ -101,9 +101,22 @@ pip install mcp requests
       "args": [
         "/Users/elijah.davis/code/api/mcp/mcp_example.py"
       ]
-    }
+    },
+      "env": {
+        "PORT": "3000"
+      }
   }
 }
+    "fivetran-simple": {
+      "command": "python",
+      "args": [
+        "/Users/elijah.davis/Documents/code/api/mcp/mcp_simple/mcp_simple.py"
+      ],
+      "env": {
+        "PORT": "3000"
+      }
+    }
+
 ```
 
 If you're using environment variables already set in your shell, you can also use a configuration file instead:
