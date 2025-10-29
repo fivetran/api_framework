@@ -1,4 +1,4 @@
-# Fivetran MCP Server
+# Fivetran MCP Server Example
 
 A streamlined Model Context Protocol (MCP) server for Fivetran operations, with steps for Cursor IDE integration.
 
