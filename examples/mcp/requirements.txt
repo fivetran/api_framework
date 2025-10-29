@@ -1,0 +1,3 @@
+# Core MCP server dependencies
+mcp>=1.10.0
+requests>=2.31.0
