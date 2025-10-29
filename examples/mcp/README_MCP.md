@@ -31,7 +31,7 @@ export FIVETRAN_API_SECRET="your_fivetran_api_secret_here"
 
 **Alternative: Configuration File**
 
-Create a `configuration.json` file in the same directory as `mcp_simple.py` with your Fivetran credentials:
+Create a `configuration.json` file in the same directory as `mcp_example.py` with your Fivetran credentials:
 
 ```json
 {
@@ -53,7 +53,7 @@ This MCP server can be integrated directly into Cursor IDE, allowing you to inte
 First, ensure all Python dependencies are installed:
 
 ```bash
-cd /path/to/mcp_simple
+cd /path/to/mcp_example
 pip install -r requirements.txt
 ```
 
@@ -76,10 +76,10 @@ pip install mcp requests
 ```json
 {
   "mcpServers": {
-    "fivetran-simple": {
+    "fivetran-example": {
       "command": "python",
       "args": [
-        "/absolute/path/to/mcp_simple/mcp_simple.py"
+        "/absolute/path/to/mcp/mcp_example.py"
       ],
       "env": {
         "FIVETRAN_API_KEY": "your_fivetran_api_key_here",
@@ -90,13 +90,13 @@ pip install mcp requests
 }
 ```
 
-**Important**: Replace `/absolute/path/to/mcp_simple/mcp_simple.py` with the absolute path to your `mcp_simple.py` file.
+**Important**: Replace `/absolute/path/to/mcp/mcp_example.py` with the absolute path to your `mcp_example.py` file.
 
 **Example configuration (with environment variables)**:
 ```json
 {
   "mcpServers": {
-    "fivetran-simple": {
+    "fivetran-example": {
       "command": "python",
       "args": [
         "/Users/elijah.davis/code/api/mcp/mcp_example.py"
@@ -111,7 +111,7 @@ If you're using environment variables already set in your shell, you can also us
 ```json
 {
   "mcpServers": {
-    "fivetran-simple": {
+    "fivetran-example": {
       "command": "python",
       "args": [
         "/Users/elijah.davis/Documents/code/api/mcp/mcp_example.py"
@@ -155,23 +155,23 @@ Once Cursor has restarted, the MCP server should be available. To verify:
 
 **Issue: MCP server not connecting**
 - Verify the Python path is correct in `mcp.json`
-- Check that the `mcp_simple.py` file is executable
+- Check that the `mcp_example.py` file is executable
 - Ensure Python 3.11+ is available at the system `python` command
 - Check Cursor's developer console (Help → Toggle Developer Tools) for error messages
 
 **Issue: Authentication errors**
 - Verify API credentials are correctly set in `env` section of `mcp.json` OR in `configuration.json`
 - Check that environment variables are set if not using the `env` section
-- Test credentials independently by running: `python mcp_simple.py` directly
+- Test credentials independently by running: `python mcp_example.py` directly
 
 **Issue: Tools not appearing**
 - Restart Cursor completely after configuration changes
 - Check that `mcp.json` is valid JSON (use a JSON validator)
-- Verify the server name in `mcp.json` matches the server name in the code (`fivetran-simple`)
+- Verify the server name in `mcp.json` matches the server name in the code (`fivetran-example`)
 
 **Issue: Permission errors**
-- Ensure the Python script has execute permissions: `chmod +x mcp_simple.py`
-- Check that the path to `mcp_simple.py` uses absolute, not relative paths
+- Ensure the Python script has execute permissions: `chmod +x mcp_example.py`
+- Check that the path to `mcp_example.py` uses absolute, not relative paths
 
 ### 4. Local Development
 
@@ -180,7 +180,7 @@ Once Cursor has restarted, the MCP server should be available. To verify:
 pip install -r requirements.txt
 
 # Run the server locally (stdio mode for testing)
-python mcp_simple.py
+python mcp_example.py
 ```
 
 Note: When running locally, the server uses stdio transport by default. For Cursor IDE integration, the server will automatically use stdio transport when invoked through the MCP configuration.
@@ -218,15 +218,15 @@ Note: When running locally, the server uses stdio transport by default. For Curs
 ## File Structure
 
 ```
-mcp_simple/
-├── mcp_simple.py          # Main server implementation
+mcp_example/
+├── mcp_example.py          # Main server implementation
 ├── requirements.txt       # Python dependencies
 ├── configuration.json    # Fivetran API credentials (optional, create if needed)
 └── README_MCP.md   # This file
 ```
 
 **For Cursor IDE**, you only need:
-- `mcp_simple.py` - The main server file
+- `mcp_example.py` - The main server file
 - `configuration.json` (optional) - If not using environment variables
 - `requirements.txt` - For installing dependencies
 
@@ -235,7 +235,7 @@ mcp_simple/
 Run the test script to verify the server setup:
 
 ```bash
-python test_mcp_simple.py
+python test_mcp_example.py
 ```
 
 ## Troubleshooting
