@@ -220,11 +220,9 @@ Note: When running locally, the server uses stdio transport by default. For Curs
 ```
 mcp_simple/
 ├── mcp_simple.py          # Main server implementation
-├── test_mcp_simple.py     # Test script
 ├── requirements.txt       # Python dependencies
-├── pyproject.toml         # uv package configuration
 ├── configuration.json    # Fivetran API credentials (optional, create if needed)
-└── README_mcp_with_fivetran.md   # This file
+└── README_MCP.md   # This file
 ```
 
 **For Cursor IDE**, you only need:
