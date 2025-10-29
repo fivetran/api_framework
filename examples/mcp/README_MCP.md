@@ -99,7 +99,7 @@ pip install mcp requests
     "fivetran-simple": {
       "command": "python",
       "args": [
-        "/Users/elijah.davis/Documents/code/api/mcp/mcp_simple/mcp_simple.py"
+        "/Users/elijah.davis/code/api/mcp/mcp_example.py"
       ]
     }
   }
@@ -114,10 +114,10 @@ If you're using environment variables already set in your shell, you can also us
     "fivetran-simple": {
       "command": "python",
       "args": [
-        "/Users/elijah.davis/Documents/code/api/mcp/mcp_simple/mcp_simple.py"
+        "/Users/elijah.davis/Documents/code/api/mcp/mcp_example.py"
       ],
       "env": {
-        "MCP_CONFIG_FILE": "/Users/elijah.davis/Documents/code/api/mcp/mcp_simple/configuration.json"
+        "MCP_CONFIG_FILE": "/Users/elijah.davis/Documents/code/api/mcp/configuration.json"
       }
     }
   }
