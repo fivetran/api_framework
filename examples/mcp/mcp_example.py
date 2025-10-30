@@ -303,30 +303,9 @@ def list_destinations() -> str:
         result = _make_api_request('GET', 'groups')
         
         if result:
-            # Handle different response structures
-            data_section = result.get('data', {})
-            if isinstance(data_section, list):
-                groups = data_section
-            elif isinstance(data_section, dict):
-                groups = data_section.get('items', [])
-            else:
-                groups = []
-            
-            # Format response for easy consumption
-            destinations = []
-            for group in groups:
-                destinations.append({
-                    'id': group.get('id'),
-                    'name': group.get('name'),
-                    'service': group.get('service'),
-                    'region': group.get('region'),
-                    'service_account_email': f"g-{group.get('id')}@fivetran-production.iam.gserviceaccount.com"
-                })
-            
             return json.dumps({
                 'success': True,
-                'destinations': destinations,
-                'count': len(destinations)
+                'data': result.get('data', {})
             }, indent=2)
         else:
             return json.dumps({
@@ -356,20 +335,9 @@ def get_destination_details(group_id: str) -> str:
         result = _make_api_request('GET', f'groups/{group_id}')
         
         if result:
-            group_data = result.get('data', {})
-            
             return json.dumps({
                 'success': True,
-                'destination': {
-                    'id': group_data.get('id'),
-                    'name': group_data.get('name'),
-                    'service': group_data.get('service'),
-                    'region': group_data.get('region'),
-                    'created_at': group_data.get('created_at'),
-                    'service_account_email': f"g-{group_data.get('id')}@fivetran-production.iam.gserviceaccount.com",
-                    'config': group_data.get('config', {}),
-                    'setup_tests': group_data.get('setup_tests', [])
-                }
+                'data': result.get('data', {})
             }, indent=2)
         else:
             return json.dumps({
@@ -408,33 +376,9 @@ def list_connectors(group_id: Optional[str] = None) -> str:
         result = _make_api_request('GET', endpoint, params=params)
         
         if result:
-            # Handle different response structures
-            data_section = result.get('data', {})
-            if isinstance(data_section, list):
-                connectors_data = data_section
-            elif isinstance(data_section, dict):
-                connectors_data = data_section.get('items', [])
-            else:
-                connectors_data = []
-            
-            # Format response for easy consumption
-            connectors = []
-            for connector in connectors_data:
-                connectors.append({
-                    'id': connector.get('id'),
-                    'name': connector.get('name'),
-                    'service': connector.get('service'),
-                    'group_id': connector.get('group_id'),
-                    'status': connector.get('status', {}).get('setup_state'),
-                    'sync_state': connector.get('status', {}).get('sync_state'),
-                    'paused': connector.get('paused', False),
-                    'created_at': connector.get('created_at')
-                })
-            
             return json.dumps({
                 'success': True,
-                'connectors': connectors,
-                'count': len(connectors)
+                'data': result.get('data', {})
             }, indent=2)
         else:
             return json.dumps({
@@ -464,28 +408,9 @@ def get_connector_details(connector_id: str) -> str:
         result = _make_api_request('GET', f'connections/{connector_id}')
         
         if result:
-            connector_data = result.get('data', {})
-            status = connector_data.get('status', {})
-            
             return json.dumps({
                 'success': True,
-                'connector': {
-                    'id': connector_data.get('id'),
-                    'name': connector_data.get('name'),
-                    'service': connector_data.get('service'),
-                    'group_id': connector_data.get('group_id'),
-                    'paused': connector_data.get('paused', False),
-                    'created_at': connector_data.get('created_at'),
-                    'succeeded_at': connector_data.get('succeeded_at'),
-                    'status': {
-                        'setup_state': status.get('setup_state'),
-                        'sync_state': status.get('sync_state'),
-                        'update_state': status.get('update_state'),
-                        'is_historical_sync': status.get('is_historical_sync', False)
-                    },
-                    'config': connector_data.get('config', {}),
-                    'schema': connector_data.get('schema', {})
-                }
+                'data': result.get('data', {})
             }, indent=2)
         else:
             return json.dumps({
@@ -518,7 +443,7 @@ def sync_connector(connector_id: str) -> str:
             return json.dumps({
                 'success': True,
                 'message': f'Sync triggered for connector {connector_id}',
-                'sync_id': result.get('data', {}).get('sync_id'),
+                'data': result.get('data', {}),
                 'timestamp': datetime.now().isoformat()
             }, indent=2)
         else:
@@ -553,19 +478,11 @@ def get_connector_metadata(connector_type: str) -> str:
         
         if result:
             metadata = result.get('data', {})
-            
+            # Return the full data section from the API so callers see all fields
             return json.dumps({
                 'success': True,
                 'connector_type': connector_type,
-                'metadata': {
-                    'name': metadata.get('name'),
-                    'description': metadata.get('description'),
-                    'required_fields': metadata.get('required_fields', []),
-                    'optional_fields': metadata.get('optional_fields', []),
-                    'auth_fields': metadata.get('auth_fields', []),
-                    'config_fields': metadata.get('config_fields', []),
-                    'examples': metadata.get('examples', {})
-                }
+                'metadata': metadata
             }, indent=2)
         else:
             return json.dumps({
@@ -661,6 +578,9 @@ def review_connector_health(connector_id: str) -> str:
                 'sync_state': sync_state,
                 'paused': paused,
                 'succeeded_at': connector_data.get('succeeded_at')
+            },
+            'raw': {
+                'connector': connector_data
             }
         }, indent=2)
         
@@ -744,6 +664,10 @@ def get_object_summary() -> str:
                 'connectors': connector_stats,
                 'health_percentage': round((connector_stats['connected'] / max(connector_stats['total'], 1)) * 100, 1),
                 'generated_at': datetime.now().isoformat()
+            },
+            'raw': {
+                'destinations': destinations,
+                'connectors': connectors
             }
         }, indent=2)
         
