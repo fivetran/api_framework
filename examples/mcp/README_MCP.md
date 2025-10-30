@@ -82,6 +82,7 @@ pip install mcp requests
         "/absolute/path/to/mcp/mcp_example.py"
       ],
       "env": {
+        "PORT": "3000",
         "FIVETRAN_API_KEY": "your_fivetran_api_key_here",
         "FIVETRAN_API_SECRET": "your_fivetran_api_secret_here"
       }
@@ -121,6 +122,7 @@ If you're using environment variables already set in your shell, you can also us
         "/Users/elijah.davis/Documents/code/api/mcp/mcp_example.py"
       ],
       "env": {
+        "PORT": "3000",
         "MCP_CONFIG_FILE": "/Users/elijah.davis/Documents/code/api/mcp/configuration.json"
       }
     }
