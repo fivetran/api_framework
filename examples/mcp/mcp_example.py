@@ -474,6 +474,7 @@ def get_connector_details(connector_id: str) -> str:
                     'group_id': connector_data.get('group_id'),
                     'paused': connector_data.get('paused', False),
                     'created_at': connector_data.get('created_at'),
+                    'succeeded_at': connector_data.get('succeeded_at'),
                     'status': {
                         'setup_state': status.get('setup_state'),
                         'sync_state': status.get('sync_state'),
@@ -481,9 +482,7 @@ def get_connector_details(connector_id: str) -> str:
                         'is_historical_sync': status.get('is_historical_sync', False)
                     },
                     'config': connector_data.get('config', {}),
-                    'schema': connector_data.get('schema', {}),
-                    'last_sync': connector_data.get('last_sync'),
-                    'next_sync': connector_data.get('next_sync')
+                    'schema': connector_data.get('schema', {})
                 }
             }, indent=2)
         else:
