@@ -656,8 +656,7 @@ def review_connector_health(connector_id: str) -> str:
                 'setup_state': setup_state,
                 'sync_state': sync_state,
                 'paused': paused,
-                'last_sync': connector_data.get('last_sync'),
-                'next_sync': connector_data.get('next_sync')
+                'succeeded_at': connector_data.get('succeeded_at')
             }
         }, indent=2)
         
