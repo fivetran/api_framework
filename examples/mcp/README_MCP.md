@@ -12,6 +12,19 @@ A streamlined Model Context Protocol (MCP) server for Fivetran operations, with 
 
 ## Quick Start
 
+### 0. Git Setup (clone upstream example)
+
+```bash
+# Clone the upstream repo that contains the MCP example
+git clone https://github.com/fivetran/api_framework.git
+
+# Enter the MCP example directory
+cd api_framework/examples/mcp
+
+pip install -r requirements.txt
+
+```
+
 ### 1. Prerequisites
 
 - Python 3.11+
