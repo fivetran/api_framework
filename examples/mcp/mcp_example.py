@@ -757,16 +757,6 @@ def get_object_summary() -> str:
 
 def main():
     """Main entry point for the MCP server."""
-    print("Starting Simple Fivetran MCP Server...")
-    print("Available tools:")
-    print("- list_destinations: List all destinations")
-    print("- get_destination_details: Get destination details")
-    print("- list_connectors: List all connectors")
-    print("- get_connector_details: Get connector details")
-    print("- sync_connector: Trigger connector sync")
-    print("- get_connector_metadata: Get connector type metadata")
-    print("- review_connector_health: Review connector health")
-    print("- get_object_summary: Get comprehensive object summary")
     
     # Determine transport type from environment variable or default to stdio
     transport = os.environ.get('MCP_TRANSPORT', 'stdio').lower()
