@@ -18,13 +18,6 @@ Architecture:
 - Core Fivetran API operations only
 - Clean, minimal codebase for quick enablement
 
-Usage:
-    # Default stdio mode (for CLI/MCP clients)
-    python mcp_simple_dbricks.py
-    
-    # HTTP mode (for web deployments)
-    MCP_TRANSPORT=http MCP_PORT=8000 python mcp_simple_dbricks.py
-
 Configuration:
     Option 1: Environment variables (recommended)
         export FIVETRAN_API_KEY="your_key"
@@ -43,6 +36,7 @@ Configuration:
 
 # Standard library - core functionality
 import json  # JSON serialization for API requests/responses
+import logging  # Structured logging for enterprise deployments
 import os  # File system and environment operations
 import time  # Rate limiting and delays
 from datetime import datetime  # Timestamps for audit logs
@@ -54,19 +48,25 @@ from requests.auth import HTTPBasicAuth  # API authentication
 
 # MCP Server Framework
 try:
-    from mcp.server.fastmcp import FastMCP  # Model Context Protocol server
-except ImportError:
-    # Auto-install if missing (development convenience)
-    print("[SETUP] Installing FastMCP library...")
-    os.system("pip install mcp")
     from mcp.server.fastmcp import FastMCP
+except ImportError:
+    raise ImportError(
+        "FastMCP is required. Install with: pip install mcp"
+    )
 
 # =============================================================================
 # SERVER INITIALIZATION
 # =============================================================================
 
 # Initialize FastMCP server instance
-mcp = FastMCP('fivetran-simple')
+mcp = FastMCP('mcp-example')
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(levelname)s] %(message)s'
+)
 
 # =============================================================================
 # CONFIGURATION MANAGEMENT
@@ -87,7 +87,7 @@ def _ensure_config_file_exists() -> None:
     try:
         # Check if environment variables are available
         if os.environ.get('FIVETRAN_API_KEY') and os.environ.get('FIVETRAN_API_SECRET'):
-            print(f"[INFO] Environment variables found - configuration file is optional")
+            logger.info("Environment variables found - configuration file is optional")
             return
             
         # If no environment variables, check for configuration file
@@ -95,12 +95,12 @@ def _ensure_config_file_exists() -> None:
         if cfg_dir:
             os.makedirs(cfg_dir, exist_ok=True)
         if not os.path.exists(config_file):
-            print(f"[WARNING] Configuration file not found at: {config_file}")
-            print(f"[WARNING] Set FIVETRAN_API_KEY and FIVETRAN_API_SECRET environment variables or create configuration file")
+            logger.warning(f"Configuration file not found at: {config_file}")
+            logger.warning("Set FIVETRAN_API_KEY and FIVETRAN_API_SECRET environment variables or create configuration file")
         else:
-            print(f"[INFO] Configuration file found at: {config_file}")
+            logger.info(f"Configuration file found at: {config_file}")
     except Exception as e:
-        print(f"[ERROR] Failed to validate configuration file path: {e}")
+        logger.error(f"Failed to validate configuration file path: {e}")
 
 # Ensure configuration file exists at startup
 _ensure_config_file_exists()
@@ -130,10 +130,10 @@ def _load_config(config_file_path: str = None) -> Dict:
     try:
         with open(config_file_path, "r") as f:
             config_content = f.read()
-            print(f"[INFO] Configuration file loaded successfully from: {config_file_path}")
-            print(f"[DEBUG] Configuration file size: {len(config_content)} characters")
+            logger.info(f"Configuration file loaded successfully from: {config_file_path}")
+            logger.debug(f"Configuration file size: {len(config_content)} characters")
             config = json.loads(config_content)
-            print(f"[DEBUG] Configuration keys found: {list(config.keys())}")
+            logger.debug(f"Configuration keys found: {list(config.keys())}")
             return config
     except Exception as e:
         raise Exception(f"Failed to load configuration file: {e}")
@@ -158,13 +158,13 @@ def _get_api_credentials() -> tuple:
         api_secret = os.environ.get('FIVETRAN_API_SECRET')
         
         if api_key and api_secret:
-            print(f"[INFO] Using credentials from environment variables")
-            print(f"[DEBUG] API Key: {api_key[:10]}...{api_key[-10:] if len(api_key) > 20 else '***'}")
-            print(f"[DEBUG] API Secret: {api_secret[:10]}...{api_secret[-10:] if len(api_secret) > 20 else '***'}")
+            logger.info("Using credentials from environment variables")
+            logger.debug(f"API Key: {api_key[:10]}...{api_key[-10:] if len(api_key) > 20 else '***'}")
+            logger.debug(f"API Secret: {api_secret[:10]}...{api_secret[-10:] if len(api_secret) > 20 else '***'}")
             return api_key, api_secret
         
         # Fallback to configuration file
-        print(f"[INFO] Environment variables not found, falling back to configuration file")
+        logger.info("Environment variables not found, falling back to configuration file")
         config = _load_config()
         
         # Handle nested fivetran config structure
@@ -176,9 +176,9 @@ def _get_api_credentials() -> tuple:
             api_key = config.get('fivetran_api_key') or config.get('api_key')
             api_secret = config.get('fivetran_api_secret') or config.get('api_secret')
         
-        print(f"[INFO] Using credentials from configuration file")
-        print(f"[DEBUG] API Key: {api_key[:10]}...{api_key[-10:] if len(api_key) > 20 else '***'}")
-        print(f"[DEBUG] API Secret: {api_secret[:10]}...{api_secret[-10:] if len(api_secret) > 20 else '***'}")
+        logger.info("Using credentials from configuration file")
+        logger.debug(f"API Key: {api_key[:10]}...{api_key[-10:] if len(api_key) > 20 else '***'}")
+        logger.debug(f"API Secret: {api_secret[:10]}...{api_secret[-10:] if len(api_secret) > 20 else '***'}")
         return api_key, api_secret
         
     except Exception as e:
@@ -224,9 +224,9 @@ def _make_api_request(method: str, endpoint: str, payload: Dict = None, params: 
         timeout = (10, 30)  # (connect_timeout, read_timeout) in seconds
         
         # Debug logging
-        print(f"[DEBUG] Executing {method} request to: {url}")
+        logger.debug(f"Executing {method} request to: {url}")
         if payload:
-            print(f"[DEBUG] Request payload: {json.dumps(payload, indent=2)}")
+            logger.debug(f"Request payload: {json.dumps(payload, indent=2)}")
         
         for attempt in range(max_retries):
             try:
@@ -242,12 +242,12 @@ def _make_api_request(method: str, endpoint: str, payload: Dict = None, params: 
                     raise ValueError(f'Invalid request method: {method}')
                 
                 # Log response details for debugging
-                print(f"[DEBUG] Response status: {response.status_code}")
-                print(f"[DEBUG] Response headers: {dict(response.headers)}")
+                logger.debug(f"Response status: {response.status_code}")
+                logger.debug(f"Response headers: {dict(response.headers)}")
                 
                 if response.status_code >= 400:
-                    print(f"[ERROR] API Error {response.status_code}: {response.text}")
-                    print(f"[DEBUG] Response content: {response.text}")
+                    logger.error(f"API Error {response.status_code}: {response.text}")
+                    logger.debug(f"Response content: {response.text}")
                 
                 response.raise_for_status()
                 
@@ -255,28 +255,28 @@ def _make_api_request(method: str, endpoint: str, payload: Dict = None, params: 
                 try:
                     response_data = response.json()
                     if isinstance(response_data, str):
-                        print(f"[WARNING] API returned string instead of JSON: {response_data}")
+                        logger.warning(f"API returned string instead of JSON: {response_data}")
                         return None
                     return response_data
                 except Exception as json_error:
-                    print(f"[ERROR] Failed to parse JSON response: {json_error}")
-                    print(f"[DEBUG] Response text: {response.text}")
+                    logger.error(f"Failed to parse JSON response: {json_error}")
+                    logger.debug(f"Response text: {response.text}")
                     return None
                 
             except requests.exceptions.Timeout as e:
-                print(f"[WARNING] Request timeout on attempt {attempt + 1}: {e}")
+                logger.warning(f"Request timeout on attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     raise e
                 time.sleep(2 ** attempt)  # Exponential backoff
                 
             except requests.exceptions.RequestException as e:
-                print(f"[ERROR] Request failed on attempt {attempt + 1}: {e}")
+                logger.error(f"Request failed on attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     raise e
                 time.sleep(2 ** attempt)  # Exponential backoff
                 
             except Exception as e:
-                print(f"[ERROR] Unexpected error on attempt {attempt + 1}: {e}")
+                logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     raise e
                 time.sleep(2 ** attempt)  # Exponential backoff
@@ -284,7 +284,7 @@ def _make_api_request(method: str, endpoint: str, payload: Dict = None, params: 
         return None
         
     except Exception as e:
-        print(f"[ERROR] Failed to make API request: {e}")
+        logger.error(f"Failed to make API request: {e}")
         return None
 
 # =============================================================================
@@ -613,7 +613,7 @@ def get_object_summary() -> str:
             destinations = []
         
         # Get connectors
-        connectors_result = _make_api_request('GET', 'connectors')
+        connectors_result = _make_api_request('GET', 'connections')
         if connectors_result:
             data_section = connectors_result.get('data', {})
             if isinstance(data_section, list):
