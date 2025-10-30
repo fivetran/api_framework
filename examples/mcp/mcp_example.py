@@ -352,6 +352,7 @@ def get_destination_details(group_id: str) -> str:
         JSON string with detailed destination information
     """
     try:
+        group_id = group_id.strip() if group_id else group_id
         result = _make_api_request('GET', f'groups/{group_id}')
         
         if result:
@@ -398,12 +399,12 @@ def list_connectors(group_id: Optional[str] = None) -> str:
         JSON string with connector list
     """
     try:
-        # Use the correct Fivetran API endpoint for connections
-        endpoint = 'connections'
+        # Use the v1 connections endpoint, with optional group_id filter
         params = {}
-        if group_id:
-            params['group_id'] = group_id
-            
+        normalized_group_id = group_id.strip() if group_id else None
+        if normalized_group_id:
+            params['group_id'] = normalized_group_id
+        endpoint = 'connections'
         result = _make_api_request('GET', endpoint, params=params)
         
         if result:
@@ -459,7 +460,8 @@ def get_connector_details(connector_id: str) -> str:
         JSON string with detailed connector information
     """
     try:
-        result = _make_api_request('GET', f'connectors/{connector_id}')
+        connector_id = connector_id.strip() if connector_id else connector_id
+        result = _make_api_request('GET', f'connections/{connector_id}')
         
         if result:
             connector_data = result.get('data', {})
@@ -509,7 +511,8 @@ def sync_connector(connector_id: str) -> str:
         JSON string with sync trigger result
     """
     try:
-        result = _make_api_request('POST', f'connectors/{connector_id}/sync')
+        connector_id = connector_id.strip() if connector_id else connector_id
+        result = _make_api_request('POST', f'connections/{connector_id}/sync')
         
         if result:
             return json.dumps({
@@ -592,8 +595,9 @@ def review_connector_health(connector_id: str) -> str:
         JSON string with health assessment and recommendations
     """
     try:
+        connector_id = connector_id.strip() if connector_id else connector_id
         # Get connector details
-        connector_result = _make_api_request('GET', f'connectors/{connector_id}')
+        connector_result = _make_api_request('GET', f'connections/{connector_id}')
         
         if not connector_result:
             return json.dumps({
@@ -689,7 +693,7 @@ def get_object_summary() -> str:
             destinations = []
         
         # Get connectors
-        connectors_result = _make_api_request('GET', 'connections')
+        connectors_result = _make_api_request('GET', 'connectors')
         if connectors_result:
             data_section = connectors_result.get('data', {})
             if isinstance(data_section, list):
@@ -757,22 +761,6 @@ def get_object_summary() -> str:
 
 def main():
     """Main entry point for the MCP server."""
-    
-    # Determine transport type from environment variable or default to stdio
-    transport = os.environ.get('MCP_TRANSPORT', 'stdio').lower()
-    
-    if transport == 'http':
-        # HTTP transport for web-based deployments
-        host = os.environ.get('MCP_HOST', '0.0.0.0')
-        port = int(os.environ.get('MCP_PORT', '8000'))
-        print(f"Running with HTTP transport on {host}:{port}")
-        mcp.run(transport="http", host=host, port=port)
-    else:
-        # stdio transport (default) for local development and CLI integration
-        print("Running with stdio transport (default)")
-        print("Set MCP_TRANSPORT=http and MCP_PORT=<port> for HTTP mode")
-        mcp.run(transport="stdio")
-
+    mcp.run(transport="stdio")
 if __name__ == "__main__":
     main()
-
