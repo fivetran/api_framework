@@ -107,10 +107,10 @@ pip install mcp requests
       }
   }
 }
-    "fivetran-simple": {
+    "fivetran-example": {
       "command": "python",
       "args": [
-        "/Users/elijah.davis/Documents/code/api/mcp/mcp_simple/mcp_simple.py"
+        "/Users/elijah.davis/Documents/code/api/mcp/fivetran-example.py"
       ],
       "env": {
         "PORT": "3000"
