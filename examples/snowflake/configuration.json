@@ -1,0 +1,27 @@
+{
+  "snowflake_user": "YOUR_USERNAME",
+  "snowflake_password": "YOUR_PASSWORD",
+  "snowflake_account": "your_account_identifier",
+  "snowflake_warehouse": "COMPUTE_WH",
+  "snowflake_database": "MY_DB",
+  "snowflake_schema": "PUBLIC",
+
+  "ssl_verify": "true",
+  "max_retries": "3",
+  "batch_delay_ms": "100",
+  "batch_size": "100",
+  "sync_mode": "incremental",
+  "enable_resource_monitoring": "true",
+
+  "tables": "CUSTOMERS,ORDERS,LOG",
+  "timestamp_column": "UPDATED_AT",
+  "custom_threads": "2",
+
+  "enable_preprocessing": "true",
+  "preprocessing_table": "LOG,CUSTOMERS",
+  "connector_list": "criterion_bail",
+  "preprocessing_sql": "UPDATE {table_list} SET _fivetran_deleted = True WHERE connector_id IN ({connector_list}) AND last_sync > '{CUSTOMERS_last_sync}'",
+
+  "use_privatelink": "false",
+  "privatelink_host": ""
+}
