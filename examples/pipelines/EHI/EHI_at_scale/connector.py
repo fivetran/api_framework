@@ -1096,7 +1096,7 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
         
         cols = safe_get_column_names(cursor)
         if not cols:
-            log.error(f"No column information available for table {table} - skipping incremental sync")
+            log.severe(f"No column information available for table {table} - skipping incremental sync")
             return records_processed
             
         log.info(f"Processing {len(cols)} columns for table {table}: {cols[:5]}{'...' if len(cols) > 5 else ''}")
@@ -1245,7 +1245,7 @@ def process_full_load(table: str, configuration: dict, conn_manager: ConnectionM
                     pc.execute(fl_q)
                     cols = safe_get_column_names(pc)
                     if not cols:
-                        log.error(f"No column information available for partition in table {table} - skipping partition")
+                        log.severe(f"No column information available for partition in table {table} - skipping partition")
                         break
                     
                     log.debug(f"Processing partition with {len(cols)} columns: {cols[:3]}{'...' if len(cols) > 3 else ''}")
