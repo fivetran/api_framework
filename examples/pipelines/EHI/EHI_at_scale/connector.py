@@ -364,15 +364,11 @@ def safe_get_column_names(cursor) -> List[str]:
 
 def safe_get_table_name(row, table_name_column: str = 'TABLE_NAME', table_name_index: int = 0) -> Optional[str]:
     """Safely extract table name from a cursor row."""
-    try:
-        value = safe_get_column_value(row, table_name_column, table_name_index)
-        if value is None:
-            log.warning(f"Could not extract table name from row: {row}")
-            return None
-        return str(value)
-    except Exception as e:
-        log.warning(f"Error extracting table name: {e}")
+    value = safe_get_column_value(row, table_name_column, table_name_index)
+    if value is None:
+        log.warning(f"Could not extract table name from row: {row}")
         return None
+    return str(value)
 
 def safe_get_column_name(row, column_name_column: str = 'COLUMN_NAME', column_name_index: int = 0) -> Optional[str]:
     """Safely extract column name from a cursor row."""
@@ -400,6 +396,20 @@ def safe_get_row_count(row, row_count_column: str = 'ROW_COUNT', row_count_index
         log.warning(f"Error extracting row count: {e}")
         return 0
 
+def _flatten_dict_value(prefix: str, value: Any, result: Dict[str, Any]) -> None:
+    """Helper function to flatten a single value."""
+    if isinstance(value, dict):
+        if not value:
+            result[prefix] = 'N/A'
+        else:
+            for k, v in value.items():
+                new_key = f"{prefix}_{k}" if prefix else k
+                flatten_dict(new_key, v, result)
+    elif isinstance(value, list):
+        result[prefix] = json.dumps(value) if value else 'N/A'
+    else:
+        result[prefix] = value if value is not None and value != "" else 'N/A'
+
 def flatten_dict(prefix: str, d: Any, result: Dict[str, Any]) -> None:
     """
     Flatten nested dictionary structures for database storage.
@@ -407,17 +417,7 @@ def flatten_dict(prefix: str, d: Any, result: Dict[str, Any]) -> None:
     This function is essential for AI/ML data that often contains nested structures
     like feature vectors, metadata, or complex JSON objects.
     """
-    if isinstance(d, dict):
-        if not d:
-            result[prefix] = 'N/A'
-        else:
-            for k, v in d.items():
-                new_key = f"{prefix}_{k}" if prefix else k
-                flatten_dict(new_key, v, result)
-    elif isinstance(d, list):
-        result[prefix] = json.dumps(d) if d else 'N/A'
-    else:
-        result[prefix] = d if d is not None and d != "" else 'N/A'
+    _flatten_dict_value(prefix, d, result)
 
 def generate_cert_chain(server: str, port: int) -> str:
     """Generates a certificate chain file by fetching intermediate and root certificates."""
@@ -875,6 +875,20 @@ def get_table_sizes(conn_manager, tables: List[str]) -> Dict[str, int]:
     
     return table_sizes
 
+def _categorize_table_by_size(row_count: int) -> str:
+    """Determine table category based on row count."""
+    if row_count < SMALL_TABLE_THRESHOLD:
+        return 'small'
+    elif row_count < LARGE_TABLE_THRESHOLD:
+        return 'medium'
+    return 'large'
+
+def _get_sort_key(categorized_item: Tuple[str, str, int]) -> Tuple[int, int]:
+    """Generate sort key for categorized table (category priority, row_count)."""
+    category_order = {'small': 0, 'medium': 1, 'large': 2}
+    _, category, row_count = categorized_item
+    return (category_order.get(category, 3), row_count)
+
 def categorize_and_sort_tables(tables: List[str], table_sizes: Dict[str, int]) -> List[Tuple[str, str, int]]:
     """
     Categorize tables by size and sort for optimal processing order.
@@ -885,23 +899,11 @@ def categorize_and_sort_tables(tables: List[str], table_sizes: Dict[str, int]) -
     Returns: List of tuples (table_name, category, row_count)
     Categories: 'small', 'medium', 'large'
     """
-    categorized = []
-    
-    for table in tables:
-        row_count = table_sizes.get(table, 0)
-        
-        if row_count < SMALL_TABLE_THRESHOLD:
-            category = 'small'
-        elif row_count < LARGE_TABLE_THRESHOLD:
-            category = 'medium'
-        else:
-            category = 'large'
-        
-        categorized.append((table, category, row_count))
-    
-    # Sort by category (small first, then medium, then large) and by row count within each category
-    categorized.sort(key=lambda x: ('small', 'medium', 'large').index(x[1]) * 1000000000 + x[2])
-    
+    categorized = [
+        (table, _categorize_table_by_size(table_sizes.get(table, 0)), table_sizes.get(table, 0))
+        for table in tables
+    ]
+    categorized.sort(key=_get_sort_key)
     return categorized
 
 def display_processing_plan(categorized_tables: List[Tuple[str, str, int]]) -> None:
@@ -975,6 +977,40 @@ def display_processing_plan(categorized_tables: List[Tuple[str, str, int]]) -> N
 
 # SCHEMA DISCOVERY AND PROCESSING
 
+def _get_debug_flag(configuration: dict) -> bool:
+    """Extract and parse debug flag from configuration."""
+    raw_debug = configuration.get("debug", False)
+    return isinstance(raw_debug, str) and raw_debug.lower() == 'true'
+
+def _get_table_list(conn_manager: ConnectionManager, debug: bool) -> List[str]:
+    """Get list of tables from the database."""
+    with conn_manager.get_cursor() as cursor:
+        query = SCHEMA_TABLE_LIST_QUERY_DEBUG if debug else SCHEMA_TABLE_LIST_QUERY
+        cursor.execute(query)
+        return [safe_get_table_name(r) for r in cursor.fetchall() if safe_get_table_name(r)]
+
+def _get_table_schema(conn_manager: ConnectionManager, table: str) -> Optional[Dict[str, Any]]:
+    """Get schema information for a single table."""
+    try:
+        with conn_manager.get_cursor() as cursor:
+            cursor.execute(SCHEMA_PK_QUERY.format(table=table))
+            pk_rows = cursor.fetchall()
+            primary_keys = [safe_get_column_name(r) for r in pk_rows if safe_get_column_name(r)]
+            
+            cursor.execute(SCHEMA_COL_QUERY.format(table=table))
+            col_rows = cursor.fetchall()
+            columns = [safe_get_column_name(r) for r in col_rows if safe_get_column_name(r)]
+        
+        obj = {'table': table}
+        if primary_keys:
+            obj['primary_key'] = primary_keys
+        if columns:
+            obj['column'] = columns
+        return obj
+    except Exception as e:
+        log.warning(f"Error processing schema for table {table}: {e}")
+        return None
+
 def schema(configuration: dict) -> List[Dict[str, Any]]:
     """
     Discover tables, columns, and primary keys.
@@ -989,43 +1025,20 @@ def schema(configuration: dict) -> List[Dict[str, Any]]:
     Returns:
         List of table schema definitions with primary keys and columns
     """
-    # Ensure all configuration values are strings
     configuration = ensure_string_configuration(configuration)
-    
     validate_configuration(configuration)
     
-    raw_debug = configuration.get("debug", False)
-    debug = (isinstance(raw_debug, str) and raw_debug.lower() == 'true')
+    debug = _get_debug_flag(configuration)
     log.info(f"Debug mode: {debug}")
     
     conn_manager = ConnectionManager(configuration)
-    
-    with conn_manager.get_cursor() as cursor:
-        query = SCHEMA_TABLE_LIST_QUERY_DEBUG if debug else SCHEMA_TABLE_LIST_QUERY
-        cursor.execute(query)
-        tables = [safe_get_table_name(r) for r in cursor.fetchall() if safe_get_table_name(r)]
+    tables = _get_table_list(conn_manager, debug)
     
     result = []
     for table in tables:
-        try:
-            with conn_manager.get_cursor() as cursor:
-                cursor.execute(SCHEMA_PK_QUERY.format(table=table))
-                pk_rows = cursor.fetchall()
-                primary_keys = [safe_get_column_name(r) for r in pk_rows if safe_get_column_name(r)]
-                cursor.execute(SCHEMA_COL_QUERY.format(table=table))
-                col_rows = cursor.fetchall()
-                columns = [safe_get_column_name(r) for r in col_rows if safe_get_column_name(r)]
-            
-            obj = {'table': table}
-            if primary_keys:
-                obj['primary_key'] = primary_keys
-            if columns:
-                obj['column'] = columns
-            result.append(obj)
-            
-        except Exception as e:
-            log.warning(f"Error processing schema for table {table}: {e}")
-            continue
+        schema_info = _get_table_schema(conn_manager, table)
+        if schema_info:
+            result.append(schema_info)
     
     return result
 
