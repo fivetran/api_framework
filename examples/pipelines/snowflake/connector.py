@@ -297,6 +297,29 @@ class ConnectionManager:
         except Exception as e:
             log.warning(f"Error closing connection: {e}")
     
+    def cleanup(self):
+        """Explicitly cleanup connections. Call this before discarding the ConnectionManager."""
+        with self.lock:
+            self._close_connection()
+    
+    def __del__(self):
+        """Destructor to ensure connections are closed during garbage collection."""
+        try:
+            # Only cleanup if connection still exists
+            # Don't acquire lock during destruction as it may already be destroyed
+            if hasattr(self, 'current_connection') and self.current_connection:
+                try:
+                    if hasattr(self, 'current_cursor') and self.current_cursor:
+                        self.current_cursor.close()
+                except Exception:
+                    pass
+                try:
+                    self.current_connection.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass  # Ignore all errors during destruction
+    
     @contextmanager
     def get_cursor(self):
         """Context manager for Snowflake cursor with automatic reconnection."""
@@ -1892,6 +1915,12 @@ def update(configuration: dict, state: dict):
     table_sizes = get_table_sizes(configuration, initial_conn_manager, tables)
     categorized_tables = categorize_and_sort_tables(tables, table_sizes)
     
+    # Cleanup initial connection manager
+    try:
+        initial_conn_manager.cleanup()
+    except Exception as e:
+        log.warning(f"Error cleaning up initial connection manager: {e}")
+    
     # Log processing strategy
     small_count = sum(1 for _, cat, _ in categorized_tables if cat == 'small')
     medium_count = sum(1 for _, cat, _ in categorized_tables if cat == 'medium')
@@ -1975,6 +2004,12 @@ def update(configuration: dict, state: dict):
             # Checkpoint the preprocessing state
             op.checkpoint(current_state)
             log.info(f"Preprocessing phase checkpointed: {current_state[preprocessing_state_key]}")
+            
+            # Cleanup preprocessing connection manager
+            try:
+                preprocessing_conn_manager.cleanup()
+            except Exception as e:
+                log.warning(f"Error cleaning up preprocessing connection manager: {e}")
             
         else:
             log.info("No preprocessing tables configured - skipping preprocessing phase")
@@ -2076,6 +2111,12 @@ def update(configuration: dict, state: dict):
             duration_s = time.time() - start_ts
             log.info(f"[{thread_name}] Finished {table}: {local_records} records in {duration_s:.1f}s | Progress {processed_tables}/{total_tables} | Next: {next_table}")
 
+        # Explicitly cleanup connection manager to prevent segfaults during garbage collection
+        try:
+            conn_manager_local.cleanup()
+        except Exception as e:
+            log.warning(f"[{thread_name}] Error cleaning up connection manager: {e}")
+
         return local_success
 
     if max_workers > 1 and total_tables > 1:
@@ -2135,7 +2176,7 @@ connector = Connector(update=update, schema=schema)
 
 if __name__ == "__main__":
     # Open the configuration.json file and load its contents
-    with open("configuration.json", 'r') as f:
+    with open("/Users/elijah.davis/Documents/code/sdk/tests/sdk_snflk_opt_pr/configuration.json", 'r') as f:
         configuration = json.load(f)
 
     # Test the connector locally
