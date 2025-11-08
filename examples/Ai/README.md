@@ -49,7 +49,7 @@ graph TB
 ## Why Partner with Fivetran for AI Solutions?
 
 ### Enterprise-Grade Intelligence
-Our AI solutions are built specifically for enterprise environments, ensuring security, scalability, and reliability at every level. With 99.9% uptime and support for 10000+ concurrent pipelines, we deliver the performance your business demands.
+Our AI solutions are built specifically for enterprise environments, ensuring security, scalability, and reliability at every level. With 99.9% uptime and support for 740+ connector types, we deliver the performance your business demands.
 
 ### Seamless Integration
 Fivetran's AI solutions integrate seamlessly with your existing Modern Data Stack—no rip-and-replace required. Our intelligent automation works alongside your current tools, enhancing their capabilities without disrupting workflows.
