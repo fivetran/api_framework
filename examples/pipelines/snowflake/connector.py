@@ -1829,7 +1829,7 @@ def sync_table_optimized(conn_manager: ConnectionManager, table_name: str, state
                                     # Update state with current progress
                                     current_state = state.copy()
                                     current_state[state_key] = str(max_timestamp) if timestamp_col else str(last_sync)
-                                    log.info(f"Checkpointing {table_name} after {records_processed} records")
+                                    # log.info(f"Checkpointing {table_name} after {records_processed} records")
                                     op.checkpoint(current_state)
                             except Exception as row_error:
                                 # Log but continue processing other rows
@@ -1839,7 +1839,7 @@ def sync_table_optimized(conn_manager: ConnectionManager, table_name: str, state
                         # Adaptive rate limiting between batches
                         safe_sleep(rate_limit_ms)
                     
-                    log.info(f"Table {table_name}: completed processing {records_processed} records in {batch_count} batches")
+                    # log.info(f"Table {table_name}: completed processing {records_processed} records in {batch_count} batches")
                     return records_processed, max_timestamp if timestamp_col else last_sync
                 finally:
                     # CRITICAL: Ensure cursor is properly closed before context manager exits
