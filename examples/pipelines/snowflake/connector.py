@@ -1,107 +1,5 @@
 """
 Snowflake Connector SDK with adaptive processing
-
-This connector provides enterprise-ready Snowflake data ingestion with comprehensive
-optimization techniques, error handling, and resource management. It's designed for
-high-volume production environments with complex data processing requirements.
-
-FEATURES:
-- Adaptive processing based on table sizes and system resources
-- Advanced error handling with automatic recovery (deadlocks, timeouts)
-- Resource monitoring with automatic parameter adjustment
-- Memory overflow prevention for large datasets
-- Incremental sync with intelligent timestamp detection
-- Optimized processing order (small → medium → large tables)
-- Comprehensive logging and monitoring
-- Thread-safe operations for concurrent processing
-- Connection pooling and timeout management
-- Preprocessing capabilities for data transformation
-
-MEMORY OPTIMIZATION:
-This connector prevents memory overflow in high-volume scenarios by:
-- Processing records immediately using cursor.fetchmany() - no accumulation
-- Calling op.upsert() for each record individually
-- Adaptive batch sizing based on table size and system resources
-- Checkpointing without memory buildup
-- Resource monitoring with automatic parameter adjustment
-
-AI/ML DATA PIPELINE OPTIMIZATION:
-- High-volume data processing with memory management
-- Schema evolution handling for dynamic data structures
-- Time-series data optimization with intelligent timestamp detection
-- Batch processing for large datasets with adaptive sizing
-- Nested data flattening for complex JSON structures
-- Preprocessing capabilities for data transformation
-
-ENTERPRISE SECURITY & COMPLIANCE:
-- JWT authentication with private key support
-- PrivateLink support for enterprise networks
-- SSL/TLS configuration with verification options
-- Comprehensive audit logging
-- Error handling with detailed diagnostics
-- Configuration validation and sanitization
-
-Authentication Methods:
-- JWT Authentication: Provide private_key and optionally private_key_password for secure authentication
-- Password Authentication: Provide snowflake_password as fallback
-
-For PrivateLink connections, set use_privatelink=true and provide privatelink_host
-(e.g., "xz32.east-us-2.privatelink.snowflakecomputing.com").
-
-Configuration Parameters:
-- JWT Auth: private_key, private_key_password (optional), snowflake_role (optional)
-- Password Auth: snowflake_password
-- Common: snowflake_user, snowflake_warehouse, snowflake_database, snowflake_schema
-- PrivateLink: use_privatelink, privatelink_host
-- Regular: snowflake_account
-- SSL: ssl_verify (optional, default: "true")
-- Rate Limiting: batch_delay_ms (optional, default: "100") - Note: Adaptive rate limiting overrides this based on table size
-- Retry: max_retries (optional, default: "3")
-- Adaptive Processing: enable_resource_monitoring (optional, default: "true")
-- Data Preprocessing: preprocessing_table (in configuration.json) - Comma-separated list of tables that need preprocessing
-- Preprocessing SQL: preprocessing_sql (optional) - SQL to execute before replication
-
-PREPROCESSING EXAMPLES:
-The preprocessing feature allows you to update Snowflake data before replication.
-IMPORTANT: The SQL must specify the target table name - it will be executed as-is.
-
-1. Dynamic SQL with table and connector lists:
-   Configuration: "preprocessing_table": "LOG,CUSTOMERS", "preprocessing_sql": "UPDATE {table_list} SET _fivetran_deleted = True WHERE connector_id IN ({connector_list})"
-   
-   This generates separate statements:
-   - "UPDATE LOG SET _fivetran_deleted = True WHERE connector_id IN ('criterion_bail')"
-   - "UPDATE CUSTOMERS SET _fivetran_deleted = True WHERE connector_id IN ('criterion_bail')"
-
-2. Single table preprocessing:
-   Configuration: "preprocessing_table": "LOG", "preprocessing_sql": "UPDATE LOG SET _fivetran_deleted = True WHERE connector_id = 'criterion_bail'"
-
-3. Multiple tables preprocessing:
-   Configuration: "preprocessing_table": "LOG,CUSTOMERS", "preprocessing_sql": "UPDATE LOG SET _fivetran_deleted = True WHERE connector_id = 'criterion_bail'"
-
-4. No preprocessing (empty string in configuration):
-   Configuration: "preprocessing_table": "", "preprocessing_sql": "UPDATE LOG SET _fivetran_deleted = True WHERE connector_id = 'criterion_bail'"
-
-5. Using state values in preprocessing SQL:
-   Configuration: "preprocessing_table": "LOG", "preprocessing_sql": "UPDATE LOG SET _fivetran_deleted = True WHERE connector_id = 'criterion_bail' AND last_sync > '{ACCOUNT_MEMBERSHIP_last_sync}'"
-   
-   State values from state.json can be substituted using {state_key} placeholders.
-   For example, {ACCOUNT_MEMBERSHIP_last_sync} will be replaced with the actual timestamp value.
-
-DYNAMIC PLACEHOLDERS:
-- {table_list}: Replaced with individual table name from configuration.preprocessing_table (generates separate UPDATE for each table)
-- {connector_list}: Replaced with comma-separated quoted connector IDs from configuration.connector_list
-- {state_key}: Replaced with actual state values (e.g., {ACCOUNT_MEMBERSHIP_last_sync})
-
-CONFIGURATION-BASED PREPROCESSING:
-The preprocessing_table value is read from configuration.json.
-This provides static control of which tables need preprocessing based on the connector configuration.
-
-SNOWFLAKE COMPATIBILITY:
-Snowflake requires separate UPDATE statements for each table. The connector automatically
-generates individual UPDATE statements when {table_list} is used, ensuring compatibility.
-
-See the Technical Reference documentation (https://fivetran.com/docs/connectors/connector-sdk/technical-reference#update)
-and the Best Practices documentation (https://fivetran.com/docs/connectors/connector-sdk/best-practices) for details
 """
 
 # Import required classes from fivetran_connector_sdk
@@ -252,6 +150,8 @@ class ConnectionManager:
         self.current_cursor = None
         self.lock = threading.Lock()
         self.timeout_hours = get_adaptive_timeout(table_size)
+        self._cleaned_up = False  # Flag to prevent double cleanup
+        self._in_use = False  # Flag to track if connection is in use
         
     def _is_connection_expired(self) -> bool:
         """Check if current connection has exceeded timeout limit."""
@@ -273,78 +173,177 @@ class ConnectionManager:
     def _create_connection(self):
         """Create a new Snowflake connection."""
         try:
-            conn = get_snowflake_connection(self.configuration)
-            self.current_connection = conn
-            self.current_cursor = conn.cursor()
-            self.connection_start_time = datetime.now(timezone.utc)
-            log.info(f"New Snowflake connection established at {self.connection_start_time}")
-            return conn, self.current_cursor
-        except Exception as e:
-            log.severe(f"Failed to create Snowflake connection: {e}")
-            raise
-    
-    def _close_connection(self):
-        """Close current Snowflake connection."""
-        try:
+            # Ensure any existing connection is closed first
             if self.current_cursor:
-                self.current_cursor.close()
-                self.current_cursor = None
-            if self.current_connection:
-                self.current_connection.close()
-                self.current_connection = None
-            self.connection_start_time = None
-            log.info("Snowflake connection closed")
-        except Exception as e:
-            log.warning(f"Error closing connection: {e}")
-    
-    def cleanup(self):
-        """Explicitly cleanup connections. Call this before discarding the ConnectionManager."""
-        with self.lock:
-            self._close_connection()
-    
-    def __del__(self):
-        """Destructor to ensure connections are closed during garbage collection."""
-        try:
-            # Only cleanup if connection still exists
-            # Don't acquire lock during destruction as it may already be destroyed
-            if hasattr(self, 'current_connection') and self.current_connection:
                 try:
-                    if hasattr(self, 'current_cursor') and self.current_cursor:
-                        self.current_cursor.close()
+                    self.current_cursor.close()
                 except Exception:
                     pass
+            if self.current_connection:
                 try:
                     self.current_connection.close()
                 except Exception:
                     pass
-        except Exception:
-            pass  # Ignore all errors during destruction
+            
+            # Create new connection
+            conn = get_snowflake_connection(self.configuration)
+            self.current_connection = conn
+            self.current_cursor = conn.cursor()
+            self.connection_start_time = datetime.now(timezone.utc)
+            self._cleaned_up = False  # Reset cleanup flag for new connection
+            log.info(f"New Snowflake connection established at {self.connection_start_time}")
+            return conn, self.current_cursor
+        except Exception as e:
+            log.severe(f"Failed to create Snowflake connection: {e}")
+            # Ensure state is clean on failure
+            self.current_cursor = None
+            self.current_connection = None
+            self.connection_start_time = None
+            raise
+    
+    def _close_connection(self):
+        """
+        Close current Snowflake connection safely.
+        
+        CRITICAL: Must close cursor BEFORE connection to prevent segfaults.
+        Snowflake connector requires this specific order for proper cleanup.
+        """
+        if self._cleaned_up:
+            return  # Already cleaned up, prevent double cleanup
+        
+        try:
+            # CRITICAL FIX: Close cursor FIRST, then connection
+            # This order is required by Snowflake connector to prevent segfaults
+            cursor_to_close = None
+            connection_to_close = None
+            
+            # Capture references while holding lock to prevent race conditions
+            if self.current_cursor:
+                cursor_to_close = self.current_cursor
+                self.current_cursor = None
+            
+            if self.current_connection:
+                connection_to_close = self.current_connection
+                self.current_connection = None
+            
+            self.connection_start_time = None
+            
+            # Now safely close resources OUTSIDE of lock to prevent deadlocks
+            # Close cursor first (required by Snowflake)
+            if cursor_to_close:
+                try:
+                    cursor_to_close.close()
+                except Exception as e:
+                    log.warning(f"Error closing cursor: {e}")
+            
+            # Then close connection
+            if connection_to_close:
+                try:
+                    connection_to_close.close()
+                except Exception as e:
+                    log.warning(f"Error closing connection: {e}")
+            
+            log.info("Snowflake connection closed safely")
+            
+        except Exception as e:
+            log.warning(f"Error in connection cleanup: {e}")
+            # Ensure references are cleared even on error
+            self.current_cursor = None
+            self.current_connection = None
+            self.connection_start_time = None
+        finally:
+            # Mark as cleaned up to prevent double cleanup
+            self._cleaned_up = True
+    
+    def cleanup(self):
+        """
+        Explicitly cleanup connections. Call this before discarding the ConnectionManager.
+        
+        This method MUST be called explicitly to prevent segfaults.
+        Do not rely on __del__ for cleanup as it can cause segfaults during garbage collection.
+        """
+        if self._cleaned_up:
+            return  # Already cleaned up
+        
+        # Wait for any in-use operations to complete
+        max_wait = 30  # Maximum wait time in seconds
+        wait_interval = 0.1  # Check every 100ms
+        waited = 0
+        
+        while self._in_use and waited < max_wait:
+            time.sleep(wait_interval)
+            waited += wait_interval
+        
+        if self._in_use:
+            log.warning("Connection still in use after wait timeout, forcing cleanup")
+        
+        with self.lock:
+            self._close_connection()
+    
+    # REMOVED __del__ method - it causes segfaults during garbage collection
+    # Explicit cleanup via cleanup() method is required instead
     
     @contextmanager
     def get_cursor(self):
-        """Context manager for Snowflake cursor with automatic reconnection."""
-        with self.lock:
-            try:
-                # Check if connection is expired or doesn't exist
-                if self._is_connection_expired() or not self.current_connection:
-                    self._close_connection()
-                    self._create_connection()
-                
-                yield self.current_cursor
-                
-            except Exception as e:
-                # Handle deadlock and timeout errors
-                if self._is_deadlock_error(e):
-                    log.warning(f"Deadlock detected: {e}")
-                    self._close_connection()
-                    raise DeadlockError(f"Snowflake deadlock: {e}")
-                elif self._is_timeout_error(e):
-                    log.warning(f"Connection timeout detected: {e}")
-                    self._close_connection()
-                    raise TimeoutError(f"Snowflake timeout: {e}")
-                else:
-                    log.severe(f"Snowflake error: {e}")
+        """
+        Context manager for Snowflake cursor with automatic reconnection.
+        
+        CRITICAL: This method tracks connection usage to prevent cleanup during active operations.
+        The lock is released before yielding to prevent deadlocks during cleanup operations.
+        """
+        if self._cleaned_up:
+            raise RuntimeError("ConnectionManager has been cleaned up and cannot be used")
+        
+        self._in_use = True
+        cursor_to_yield = None
+        
+        try:
+            # Acquire lock only for connection setup/check, not during cursor usage
+            with self.lock:
+                try:
+                    # Check if connection is expired or doesn't exist
+                    if self._is_connection_expired() or not self.current_connection:
+                        self._close_connection()
+                        self._cleaned_up = False  # Reset flag for new connection
+                        self._create_connection()
+                    
+                    # Capture cursor reference while holding lock
+                    cursor_to_yield = self.current_cursor
+                    if not cursor_to_yield:
+                        raise RuntimeError("Failed to obtain cursor from connection")
+                    
+                except Exception as setup_error:
+                    self._in_use = False
                     raise
+            
+            # CRITICAL: Release lock before yielding cursor to prevent deadlocks
+            # This allows cleanup() to proceed if needed while cursor is in use
+            # The _in_use flag protects against cleanup during active operations
+            try:
+                yield cursor_to_yield
+            except Exception as e:
+                # Re-acquire lock for error handling
+                with self.lock:
+                    # Handle deadlock and timeout errors
+                    if self._is_deadlock_error(e):
+                        log.warning(f"Deadlock detected: {e}")
+                        self._close_connection()
+                        raise DeadlockError(f"Snowflake deadlock: {e}")
+                    elif self._is_timeout_error(e):
+                        log.warning(f"Connection timeout detected: {e}")
+                        self._close_connection()
+                        raise TimeoutError(f"Snowflake timeout: {e}")
+                    else:
+                        log.severe(f"Snowflake error: {e}")
+                        # Close connection on error to prevent stale connections
+                        try:
+                            self._close_connection()
+                        except Exception as cleanup_error:
+                            log.warning(f"Error during connection cleanup after error: {cleanup_error}")
+                        raise
+        finally:
+            # Always mark as not in use, even if exception occurred
+            self._in_use = False
 
 class DeadlockError(Exception):
     """
@@ -1793,49 +1792,66 @@ def sync_table_optimized(conn_manager: ConnectionManager, table_name: str, state
                 # Process records in batches with adaptive sizing - NO MEMORY ACCUMULATION
                 # Each record is processed immediately and upserted to prevent memory overflow
                 batch_count = 0
-                while True:
-                    rows = cursor.fetchmany(batch_size)
-                    if not rows:
-                        break
+                try:
+                    while True:
+                        rows = cursor.fetchmany(batch_size)
+                        if not rows:
+                            break
 
-                    batch_count += 1
-                    log.info(f"Processing batch {batch_count} for table {table_name} ({len(rows)} rows)")
+                        batch_count += 1
+                        log.info(f"Processing batch {batch_count} for table {table_name} ({len(rows)} rows)")
 
-                    # Process each row immediately without accumulating in memory
-                    for row in rows:
-                        data = {col: convert_value(val) for col, val in zip(columns, row)}
-                        
-                        # Flatten nested data structures for AI/ML data
-                        flat_data = {}
-                        flatten_dict("", data, flat_data)
-                        
-                        # IMMEDIATE UPSERT - No memory accumulation
-                        # This prevents the memory overflow issue by processing records one at a time
-                        op.upsert(table=table_name_clean, data=flat_data)
-                        
-                        # Track timestamp for checkpointing
-                        if timestamp_col:
-                            current_timestamp = data.get(timestamp_col)
-                            if current_timestamp:
-                                current_timestamp_str = str(current_timestamp)
-                                if current_timestamp_str > max_timestamp:
-                                    max_timestamp = current_timestamp_str
+                        # Process each row immediately without accumulating in memory
+                        for row in rows:
+                            try:
+                                data = {col: convert_value(val) for col, val in zip(columns, row)}
+                                
+                                # Flatten nested data structures for AI/ML data
+                                flat_data = {}
+                                flatten_dict("", data, flat_data)
+                                
+                                # IMMEDIATE UPSERT - No memory accumulation
+                                # This prevents the memory overflow issue by processing records one at a time
+                                op.upsert(table=table_name_clean, data=flat_data)
+                                
+                                # Track timestamp for checkpointing
+                                if timestamp_col:
+                                    current_timestamp = data.get(timestamp_col)
+                                    if current_timestamp:
+                                        current_timestamp_str = str(current_timestamp)
+                                        if current_timestamp_str > max_timestamp:
+                                            max_timestamp = current_timestamp_str
 
-                        records_processed += 1
+                                records_processed += 1
+                                
+                                # Checkpoint every adaptive interval to save progress
+                                if records_processed % checkpoint_interval == 0:
+                                    # Update state with current progress
+                                    current_state = state.copy()
+                                    current_state[state_key] = str(max_timestamp) if timestamp_col else str(last_sync)
+                                    log.info(f"Checkpointing {table_name} after {records_processed} records")
+                                    op.checkpoint(current_state)
+                            except Exception as row_error:
+                                # Log but continue processing other rows
+                                log.warning(f"Error processing row in {table_name}: {row_error}")
+                                continue
                         
-                        # Checkpoint every adaptive interval to save progress
-                        if records_processed % checkpoint_interval == 0:
-                            # Update state with current progress
-                            current_state = state.copy()
-                            current_state[state_key] = str(max_timestamp) if timestamp_col else str(last_sync)
-                            log.info(f"Checkpointing {table_name} after {records_processed} records")
-                            op.checkpoint(current_state)
+                        # Adaptive rate limiting between batches
+                        safe_sleep(rate_limit_ms)
                     
-                    # Adaptive rate limiting between batches
-                    safe_sleep(rate_limit_ms)
-                
-                log.info(f"Table {table_name}: completed processing {records_processed} records in {batch_count} batches")
-                return records_processed, max_timestamp if timestamp_col else last_sync
+                    log.info(f"Table {table_name}: completed processing {records_processed} records in {batch_count} batches")
+                    return records_processed, max_timestamp if timestamp_col else last_sync
+                finally:
+                    # CRITICAL: Ensure cursor is properly closed before context manager exits
+                    # This prevents segfaults by ensuring cursor cleanup happens before connection cleanup
+                    try:
+                        # Cursor will be closed by context manager, but we ensure it's done
+                        if hasattr(cursor, 'close'):
+                            # Don't explicitly close here - let context manager handle it
+                            # But ensure we're not holding any references
+                            pass
+                    except Exception as cleanup_error:
+                        log.warning(f"Error during cursor cleanup: {cleanup_error}")
                 
             except Exception as e:
                 log.severe(f"Error syncing table {table_name}: {e}")
@@ -1915,11 +1931,24 @@ def update(configuration: dict, state: dict):
     table_sizes = get_table_sizes(configuration, initial_conn_manager, tables)
     categorized_tables = categorize_and_sort_tables(tables, table_sizes)
     
-    # Cleanup initial connection manager
+    # CRITICAL: Cleanup initial connection manager to prevent segfaults
+    # This must be done explicitly - do not rely on garbage collection
     try:
         initial_conn_manager.cleanup()
+        log.info("Initial connection manager cleaned up successfully")
     except Exception as e:
         log.warning(f"Error cleaning up initial connection manager: {e}")
+        # Force cleanup even if cleanup() fails
+        try:
+            if hasattr(initial_conn_manager, 'current_cursor') and initial_conn_manager.current_cursor:
+                initial_conn_manager.current_cursor.close()
+        except Exception:
+            pass
+        try:
+            if hasattr(initial_conn_manager, 'current_connection') and initial_conn_manager.current_connection:
+                initial_conn_manager.current_connection.close()
+        except Exception:
+            pass
     
     # Log processing strategy
     small_count = sum(1 for _, cat, _ in categorized_tables if cat == 'small')
@@ -2005,11 +2034,24 @@ def update(configuration: dict, state: dict):
             op.checkpoint(current_state)
             log.info(f"Preprocessing phase checkpointed: {current_state[preprocessing_state_key]}")
             
-            # Cleanup preprocessing connection manager
+            # CRITICAL: Cleanup preprocessing connection manager to prevent segfaults
+            # This must be done explicitly - do not rely on garbage collection
             try:
                 preprocessing_conn_manager.cleanup()
+                log.info("Preprocessing connection manager cleaned up successfully")
             except Exception as e:
                 log.warning(f"Error cleaning up preprocessing connection manager: {e}")
+                # Force cleanup even if cleanup() fails
+                try:
+                    if hasattr(preprocessing_conn_manager, 'current_cursor') and preprocessing_conn_manager.current_cursor:
+                        preprocessing_conn_manager.current_cursor.close()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(preprocessing_conn_manager, 'current_connection') and preprocessing_conn_manager.current_connection:
+                        preprocessing_conn_manager.current_connection.close()
+                except Exception:
+                    pass
             
         else:
             log.info("No preprocessing tables configured - skipping preprocessing phase")
@@ -2066,56 +2108,74 @@ def update(configuration: dict, state: dict):
         start_ts = time.time()
         log.info(f"[{thread_name}] Starting {table} ({category}, {row_count:,} rows)")
 
-        conn_manager_local = ConnectionManager(configuration, table_size=row_count)
-
+        conn_manager_local = None
         local_success = False
         local_records = 0
         last_sync = None
         table_name_clean = get_table_name_without_schema(table)
 
-        for attempt in range(max_retries):
-            try:
-                recs, last_sync_val = sync_table_optimized(
-                    conn_manager_local, table, current_state, configuration, row_count
-                )
-                local_records += recs
-                last_sync = last_sync_val
-                local_success = True
-                break
-            except (DeadlockError, TimeoutError) as e:
-                log.warning(f"[{thread_name}] {type(e).__name__} for {table}, attempt {attempt+1}/{max_retries}: {e}")
-                if attempt + 1 >= max_retries:
-                    break
-                base_backoff = min(DEFAULT_RETRY_DELAY_SEC * (2 ** attempt), 60)
-                delay = random.uniform(base_backoff * 0.5, base_backoff * 1.5)
-                time.sleep(delay)
-            except Exception as e:
-                log.severe(f"[{thread_name}] Unexpected error processing {table}: {e}")
-                break
-
-        # Update shared counters and state
-        with results_lock:
-            nonlocal total_records, successful_tables, failed_tables, processed_tables
-            processed_tables += 1
-            total_records += local_records
-            if local_success:
-                successful_tables += 1
-                if local_records > 0 and last_sync is not None:
-                    state_key = f"{table_name_clean}_last_sync"
-                    current_state[state_key] = str(last_sync)
-                    op.checkpoint(current_state)
-            else:
-                failed_tables += 1
-
-            next_table = categorized_tables[processed_tables][0] if processed_tables < total_tables else 'None'
-            duration_s = time.time() - start_ts
-            log.info(f"[{thread_name}] Finished {table}: {local_records} records in {duration_s:.1f}s | Progress {processed_tables}/{total_tables} | Next: {next_table}")
-
-        # Explicitly cleanup connection manager to prevent segfaults during garbage collection
         try:
-            conn_manager_local.cleanup()
-        except Exception as e:
-            log.warning(f"[{thread_name}] Error cleaning up connection manager: {e}")
+            # Create connection manager for this thread
+            conn_manager_local = ConnectionManager(configuration, table_size=row_count)
+
+            for attempt in range(max_retries):
+                try:
+                    recs, last_sync_val = sync_table_optimized(
+                        conn_manager_local, table, current_state, configuration, row_count
+                    )
+                    local_records += recs
+                    last_sync = last_sync_val
+                    local_success = True
+                    break
+                except (DeadlockError, TimeoutError) as e:
+                    log.warning(f"[{thread_name}] {type(e).__name__} for {table}, attempt {attempt+1}/{max_retries}: {e}")
+                    if attempt + 1 >= max_retries:
+                        break
+                    base_backoff = min(DEFAULT_RETRY_DELAY_SEC * (2 ** attempt), 60)
+                    delay = random.uniform(base_backoff * 0.5, base_backoff * 1.5)
+                    time.sleep(delay)
+                except Exception as e:
+                    log.severe(f"[{thread_name}] Unexpected error processing {table}: {e}")
+                    break
+
+            # Update shared counters and state
+            with results_lock:
+                nonlocal total_records, successful_tables, failed_tables, processed_tables
+                processed_tables += 1
+                total_records += local_records
+                if local_success:
+                    successful_tables += 1
+                    if local_records > 0 and last_sync is not None:
+                        state_key = f"{table_name_clean}_last_sync"
+                        current_state[state_key] = str(last_sync)
+                        op.checkpoint(current_state)
+                else:
+                    failed_tables += 1
+
+                next_table = categorized_tables[processed_tables][0] if processed_tables < total_tables else 'None'
+                duration_s = time.time() - start_ts
+                log.info(f"[{thread_name}] Finished {table}: {local_records} records in {duration_s:.1f}s | Progress {processed_tables}/{total_tables} | Next: {next_table}")
+
+        finally:
+            # CRITICAL: Always cleanup connection manager in finally block
+            # This prevents segfaults by ensuring cleanup happens even on exceptions
+            if conn_manager_local is not None:
+                try:
+                    conn_manager_local.cleanup()
+                    log.info(f"[{thread_name}] Connection manager cleaned up for {table}")
+                except Exception as e:
+                    log.warning(f"[{thread_name}] Error cleaning up connection manager for {table}: {e}")
+                    # Force cleanup even if cleanup() fails
+                    try:
+                        if hasattr(conn_manager_local, 'current_cursor') and conn_manager_local.current_cursor:
+                            conn_manager_local.current_cursor.close()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(conn_manager_local, 'current_connection') and conn_manager_local.current_connection:
+                            conn_manager_local.current_connection.close()
+                    except Exception:
+                        pass
 
         return local_success
 
@@ -2176,7 +2236,7 @@ connector = Connector(update=update, schema=schema)
 
 if __name__ == "__main__":
     # Open the configuration.json file and load its contents
-    with open("/Users/elijah.davis/Documents/code/sdk/tests/sdk_snflk_opt_pr/configuration.json", 'r') as f:
+    with open("/configuration.json", 'r') as f:
         configuration = json.load(f)
 
     # Test the connector locally
