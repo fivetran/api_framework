@@ -15,6 +15,8 @@ Enterprise-grade Model Context Protocol (MCP) server for Fivetran operations, se
 - Cursor IDE installed
 - Fivetran API credentials (username and password for basic auth)
 - Node.js installed (for `npx` command)
+- MCP_FIVETRAN_API_BASIC_AUTH_USERNAME: Your Fivetran API username
+- MCP_FIVETRAN_API_BASIC_AUTH_PASSWORD: Your Fivetran API password
 
 ## Quick Start
 
