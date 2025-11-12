@@ -1,6 +1,6 @@
 # Fivetran MCP Server via Gram Speakeasy
 
-Enterprise-grade Model Context Protocol (MCP) server for Fivetran operations, seamlessly integrated with Cursor IDE through Gram.
+Model Context Protocol (MCP) server for Fivetran operations, seamlessly integrated with Cursor IDE through Gram.
 
 ## Features
 
