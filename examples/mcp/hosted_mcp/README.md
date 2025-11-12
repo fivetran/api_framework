@@ -75,13 +75,13 @@ if($env:MCP_FIVETRAN_API_BASIC_AUTH_PASSWORD){$p=$env:MCP_FIVETRAN_API_BASIC_AUT
 
 If both show ✓, proceed to Step 2. If you see ✗, ensure variables are exported and reload your shell.
 
-### Step 2: Install via Gram.ai
+### Step 2: Install via Gram
 
 1. **Visit the installation page**: [https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install](https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install)
 
 2. **Select Cursor IDE** from the available IDE options
 
-3. **Click Install** - Gram.ai will automatically configure Cursor with the correct MCP settings
+3. **Click Install** - Gram will automatically configure Cursor with the correct MCP settings
 
 The installation will use your environment variables (`MCP_FIVETRAN_API_BASIC_AUTH_USERNAME` and `MCP_FIVETRAN_API_BASIC_AUTH_PASSWORD`) that you set in Step 1.
 
