@@ -1,6 +1,6 @@
 # Fivetran MCP Server via Gram.ai
 
-Enterprise-grade Model Context Protocol (MCP) server for Fivetran operations, seamlessly integrated with Cursor IDE through Gram.ai.
+Model Context Protocol (MCP) server for Fivetran operations, seamlessly integrated with Cursor IDE through Gram.ai.
 
 **Visit the installation page**: [https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install](https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install)
 
