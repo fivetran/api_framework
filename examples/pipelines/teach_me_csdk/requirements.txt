@@ -1,0 +1,15 @@
+# Fivetran Connector SDK - Top 10 Essential Functions
+# Requirements file for self-contained e-commerce customer data connector
+# 
+# Note: This connector is self-contained and only requires the Fivetran Connector SDK
+# which is included in the base environment. No additional dependencies needed.
+
+# The connector uses only standard library modules:
+# - json, time, hashlib, base64, random, datetime, typing
+# - No external HTTP libraries or third-party packages required
+
+# For production use, you may want to add:
+# requests>=2.31.0
+# pandas>=2.0.0
+# tenacity>=8.2.0
+# psutil>=5.9.0

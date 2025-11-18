@@ -1,0 +1,23 @@
+{
+  "source_system": "shopvault_ecommerce",
+  "max_calls_per_minute": "30",
+  "time_window_seconds": "60",
+  "page_size": "25",
+  "max_pages": "20",
+  "sync_frequency_minutes": "60",
+  "batch_size": "50",
+  "enable_incremental_sync": "true",
+  "data_retention_days": "90",
+  "enable_data_validation": "true",
+  "enable_data_transformation": "true",
+  "enable_performance_monitoring": "false",
+  "log_level": "INFO",
+  "timeout_seconds": "300",
+  "max_retries": "3",
+  "retry_delay_seconds": "5",
+  "simulate_errors": "false",
+  "verbose_logging": "true",
+  "show_data_quality_insights": "true",
+  "create_fallback_records": "true",
+  "dataset_size": "500"
+}
