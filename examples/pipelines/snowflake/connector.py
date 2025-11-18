@@ -200,24 +200,41 @@ def parse_timestamp_columns(configuration: dict) -> List[str]:
     columns = [col.strip().upper() for col in timestamp_column_str.split(',') if col.strip()]
     return columns
 
-def find_timestamp_column(columns: List[str], timestamp_columns: List[str]) -> Optional[str]:
-    """Find first matching timestamp column from configured list."""
+def find_timestamp_column(columns: List[str], timestamp_columns: List[str]) -> Tuple[Optional[str], List[str]]:
+    """
+    Find first matching timestamp column from configured list.
+    
+    Returns a tuple of:
+    - First matching column name (or None if no match)
+    - List of all configured timestamp columns that were checked (for logging)
+    
+    Matches are case-insensitive and support both exact and partial matching.
+    Checks in the order of configured timestamp columns to respect logical order.
+    """
     if not timestamp_columns:
-        return None
+        return None, []
+    
+    columns_upper = [col.upper() for col in columns]
+    timestamp_columns_upper = [tc.upper() for tc in timestamp_columns]
     
     # Check for exact matches first (case-insensitive)
-    for col in columns:
-        if col.upper() in [tc.upper() for tc in timestamp_columns]:
-            return col
+    # Iterate through configured columns in order to respect logical order
+    for tc in timestamp_columns:
+        tc_upper = tc.upper()
+        for col in columns:
+            if col.upper() == tc_upper:
+                return col, timestamp_columns
     
-    # Check for partial matches
-    for col in columns:
-        col_upper = col.upper()
-        for tc in timestamp_columns:
-            if tc.upper() in col_upper or col_upper in tc.upper():
-                return col
+    # If no exact matches, check for partial matches
+    # Still iterate through configured columns in order
+    for tc in timestamp_columns:
+        tc_upper = tc.upper()
+        for col in columns:
+            col_upper = col.upper()
+            if tc_upper in col_upper or col_upper in tc_upper:
+                return col, timestamp_columns
     
-    return None
+    return None, timestamp_columns
 
 # =============================================================================
 # SNOWFLAKE CONNECTION
@@ -372,15 +389,19 @@ def get_table_columns(cursor, table_name: str) -> List[str]:
 def sync_table(conn_manager: ConnectionManager, table_name: str, state: dict, 
                configuration: dict, batch_size: int = DEFAULT_BATCH_SIZE) -> Tuple[int, str]:
     """
-    Sync a table with zero-memory accumulation.
+    Sync a table with zero-memory accumulation and incremental replication.
     
     Processes rows immediately and upserts them one at a time to prevent
     memory overflow. Uses batch fetching for efficiency but processes
     each row immediately.
+    
+    Supports incremental sync based on timestamp columns:
+    - First sync or no timestamp match: Uses DEFAULT_START_DATE for full lookback
+    - Subsequent syncs: Uses checkpointed state for incremental replication
+    - Uses first matching timestamp column from configuration (respects logical order)
     """
     table_name_clean = get_table_name_without_schema(table_name)
     state_key = f"{table_name_clean}_last_sync"
-    last_sync = state.get(state_key, DEFAULT_START_DATE)
     
     # Parse timestamp columns from configuration
     timestamp_columns_config = parse_timestamp_columns(configuration)
@@ -390,19 +411,37 @@ def sync_table(conn_manager: ConnectionManager, table_name: str, state: dict,
         columns = get_table_columns(cursor, table_name)
         if not columns:
             log.severe(f"No columns found for table {table_name}")
-            return 0, last_sync
+            return 0, DEFAULT_START_DATE
         
-        # Find timestamp column for incremental sync
-        timestamp_col = find_timestamp_column(columns, timestamp_columns_config) if timestamp_columns_config else None
+        # Find first matching timestamp column (respects configuration order)
+        timestamp_col, checked_columns = find_timestamp_column(columns, timestamp_columns_config) if timestamp_columns_config else (None, [])
         
-        # Build query
+        # Determine sync mode and last_sync value
         if timestamp_col:
+            # We have a matching timestamp column - check state
+            last_sync = state.get(state_key)
+            if not last_sync or last_sync == "":
+                # First sync: use DEFAULT_START_DATE
+                last_sync = DEFAULT_START_DATE
+                log.info(f"{table_name}: First sync detected. Matched timestamp column '{timestamp_col}' from configured columns {checked_columns}. Using full lookback from {DEFAULT_START_DATE}")
+            else:
+                # Incremental sync: use checkpointed state
+                log.info(f"{table_name}: Incremental sync. Using matched timestamp column '{timestamp_col}' from configured columns {checked_columns}. Filtering from checkpointed state: {last_sync}")
+            
+            # Build incremental query using first matched timestamp column
             query = f"""
             SELECT * FROM {table_name} 
             WHERE {timestamp_col} > '{last_sync}'
             ORDER BY {timestamp_col}
             """
         else:
+            # No matching timestamp column found - use DEFAULT_START_DATE for full table scan
+            last_sync = DEFAULT_START_DATE
+            if checked_columns:
+                log.info(f"{table_name}: No matching timestamp column found. Checked configured columns {checked_columns} against table columns. Performing full table scan from {DEFAULT_START_DATE}")
+            else:
+                log.info(f"{table_name}: No timestamp columns configured. Performing full table scan from {DEFAULT_START_DATE}")
+            
             query = f"SELECT * FROM {table_name}"
         
         # Execute query
@@ -429,7 +468,7 @@ def sync_table(conn_manager: ConnectionManager, table_name: str, state: dict,
                 # IMMEDIATE UPSERT - No memory accumulation
                 op.upsert(table=table_name_clean, data=data)
                 
-                # Track timestamp for checkpointing
+                # Track timestamp for checkpointing using first matched column
                 if timestamp_col and data.get(timestamp_col):
                     current_timestamp_str = str(data[timestamp_col])
                     if current_timestamp_str > max_timestamp:
@@ -440,7 +479,12 @@ def sync_table(conn_manager: ConnectionManager, table_name: str, state: dict,
                 # Checkpoint at intervals
                 if records_processed % CHECKPOINT_INTERVAL == 0:
                     current_state = state.copy()
-                    current_state[state_key] = str(max_timestamp) if timestamp_col else str(last_sync)
+                    # Update state with timestamp if we have a matching timestamp column
+                    if timestamp_col:
+                        current_state[state_key] = str(max_timestamp)
+                    else:
+                        # For full table scans without timestamp column, keep DEFAULT_START_DATE
+                        current_state[state_key] = str(DEFAULT_START_DATE)
                     op.checkpoint(current_state)
             
             # Log batch progress
@@ -453,7 +497,8 @@ def sync_table(conn_manager: ConnectionManager, table_name: str, state: dict,
         rate = records_processed / elapsed if elapsed > 0 else 0
         log.info(f"{table_name}: Completed {records_processed:,} rows in {elapsed:.1f}s ({rate:.0f} rows/sec)")
         
-        return records_processed, max_timestamp if timestamp_col else last_sync
+        # Return max_timestamp if we have a timestamp column, otherwise return DEFAULT_START_DATE
+        return records_processed, max_timestamp if timestamp_col else DEFAULT_START_DATE
 
 # =============================================================================
 # SCHEMA AND UPDATE FUNCTIONS
@@ -565,4 +610,3 @@ if __name__ == "__main__":
         configuration = json.load(f)
     
     connector.debug(configuration=configuration)
-
