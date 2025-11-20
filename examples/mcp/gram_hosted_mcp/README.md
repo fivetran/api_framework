@@ -47,8 +47,8 @@ After clicking Install, Cursor will open and ask you to configure the MCP server
      "fivetran_api": {
        "url": "https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp",
        "headers": {
-         "Mcp-Fivetran-Api-Basic-Auth-Username": "your_fivetran_api_username_here",
-         "Mcp-Fivetran-Api-Basic-Auth-Password": "your_fivetran_api_password_here"
+         "Mcp-Fivetran-Api-Basic-Auth-Username": "your_fivetran_api_key_here",
+         "Mcp-Fivetran-Api-Basic-Auth-Password": "your_fivetran_api_secret_here"
        }
      }
    }
@@ -109,6 +109,6 @@ You can now ask Cursor AI to:
 ## Support
 
 For issues and questions:
-- Check Cursor's developer console for detailed error messages
 - Verify Fivetran API credentials and permissions
 - Ensure Node.js and `npx` are properly installed
+- Book a [call](https://go.fivetran.com/demo/services) with the Professional Services team 
