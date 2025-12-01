@@ -366,14 +366,14 @@ Remember to:
 - Remove yield requirements for easier adoption
 - Focus on enterprise-grade quality
 
-# This is an example for how to work with the fivetran_connector_sdk module.
+- This is an example for how to work with the fivetran_connector_sdk module.
 """ Add one line description of your connector here.
 For example: This connector demonstrates how to fetch AI/ML data from XYZ source and upsert it into destination using ABC library."""
-# See the Technical Reference documentation (https://fivetran.com/docs/connectors/connector-sdk/technical-reference#update)
-# and the Best Practices documentation (https://fivetran.com/docs/connectors/connector-sdk/best-practices) for details
+- See the Technical Reference documentation (https://fivetran.com/docs/connectors/connector-sdk/technical-reference#update)
+ and the Best Practices documentation (https://fivetran.com/docs/connectors/connector-sdk/best-practices) for details
 
 
-# Import required classes from fivetran_connector_sdk
+- Import required classes from fivetran_connector_sdk
 from fivetran_connector_sdk import Connector # For supporting Connector operations like Update() and Schema()
 from fivetran_connector_sdk import Logging as log # For enabling Logs in your connector code
 from fivetran_connector_sdk import Operations as op # For supporting Data operations like Upsert(), Update(), Delete() and checkpoint()
@@ -490,14 +490,14 @@ def update(configuration: dict, state: dict):
         raise RuntimeError(f"Failed to sync data: {str(e)}")
 
 
-# Create the connector object using the schema and update functions
+- Create the connector object using the schema and update functions
 connector = Connector(update=update, schema=schema)
 
-# Check if the script is being run as the main module.
-# This is Python's standard entry method allowing your script to be run directly from the command line or IDE 'run' button.
-# This is useful for debugging while you write your code. Note this method is not called by Fivetran when executing your connector in production.
-# Please test using the Fivetran debug command prior to finalizing and deploying your connector.
-if __name__ == "__main__":
+- Check if the script is being run as the main module.
+- This is Python's standard entry method allowing your script to be run directly from the command line or IDE 'run' button.
+- This is useful for debugging while you write your code. Note this method is not called by Fivetran when executing your connector in production.
+- Please test using the Fivetran debug command prior to finalizing and deploying your connector.
+- if __name__ == "__main__":
     # Open the configuration.json file and load its contents
     with open("configuration.json", 'r') as f:
         configuration = json.load(f)
