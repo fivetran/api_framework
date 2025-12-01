@@ -2,4 +2,7 @@
     "api_key": "",
     "api_secret": "",
     "debug_mode": "true/false"
+    "debug_user_limit": "5",
+    "debug_team_limit": "5",
+    "checkpoint_interval": "10"
 }
