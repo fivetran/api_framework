@@ -391,6 +391,72 @@ def get_user_connections(headers: Dict[str, str], session: requests.Session, use
             return connections_data['data'] if isinstance(connections_data['data'], list) else [connections_data['data']]
     return []
 
+def get_group_details(headers: Dict[str, str], session: requests.Session, group_id: str) -> Optional[Dict]:
+    """
+    Fetch detailed information for a specific group.
+    Args:
+        headers: Authentication headers
+        session: Requests session
+        group_id: Group identifier
+    Returns:
+        Group details dictionary or None
+    """
+    log_structured("info", f"Fetching details for group", group_id=group_id)
+    return make_api_request(f'groups/{group_id}', headers, session)
+
+def get_group_connections(headers: Dict[str, str], session: requests.Session, group_id: str, limit: Optional[int] = None, cursor: Optional[str] = None) -> Tuple[List[Dict], Optional[str]]:
+    """
+    Fetch all connections for a specific group with pagination support.
+    Args:
+        headers: Authentication headers
+        session: Requests session
+        group_id: Group identifier
+        limit: Maximum number of records to fetch per page
+        cursor: Pagination cursor for next page
+    Returns:
+        Tuple of (list of connection data dictionaries, next cursor or None)
+    """
+    log_structured("info", f"Fetching connections for group", group_id=group_id, limit=limit, cursor=cursor)
+    
+    # Use the groups/{group_id}/connectors endpoint or connections with group_id filter
+    endpoint = f'groups/{group_id}/connectors'
+    if limit:
+        endpoint += f'?limit={limit}'
+    if cursor:
+        endpoint += f'&cursor={cursor}' if limit else f'?cursor={cursor}'
+    
+    connections_data = make_api_request(endpoint, headers, session)
+    
+    # Handle both possible response structures: data.items or just data
+    items = []
+    next_cursor = None
+    
+    if connections_data:
+        if 'data' in connections_data:
+            if 'items' in connections_data['data']:
+                items = connections_data['data']['items']
+            else:
+                items = connections_data['data'] if isinstance(connections_data['data'], list) else [connections_data['data']]
+            
+            # Check for pagination cursor
+            if 'next_cursor' in connections_data.get('data', {}):
+                next_cursor = connections_data['data']['next_cursor']
+    
+    return items, next_cursor
+
+def get_connection_details(headers: Dict[str, str], session: requests.Session, connection_id: str) -> Optional[Dict]:
+    """
+    Fetch detailed information for a specific connection.
+    Args:
+        headers: Authentication headers
+        session: Requests session
+        connection_id: Connection identifier
+    Returns:
+        Connection details dictionary or None
+    """
+    log_structured("info", f"Fetching details for connection", connection_id=connection_id)
+    return make_api_request(f'connections/{connection_id}', headers, session)
+
 def get_user_groups(headers: Dict[str, str], session: requests.Session, user_id: str) -> List[Dict]:
     """
     Fetch groups associated with a user.
@@ -517,18 +583,48 @@ def get_user_data_batch(headers: Dict[str, str], session: requests.Session, user
     
     return results
 
-def create_soc2_access_record(user_data: Dict, team_data: Dict, group_data: Dict, role_data: Dict, connection_data: Dict) -> Dict:
+def extract_nested_data(data: Optional[Dict], field: str = 'data') -> Optional[Dict]:
+    """
+    Extract data from nested API response structures.
+    Handles cases where API returns {'data': {'data': {...}}} or {'data': {...}}.
+    Args:
+        data: Dictionary that might contain nested data
+        field: Field name to extract (default: 'data')
+    Returns:
+        Extracted data dictionary or original data if no nesting found
+    """
+    if not data:
+        return None
+    
+    # If data has a 'data' field, extract it
+    if field in data and isinstance(data[field], dict):
+        nested = data[field]
+        # Check if nested data also has a 'data' field (double nesting)
+        if 'data' in nested and isinstance(nested['data'], dict):
+            return nested['data']
+        return nested
+    
+    return data
+
+def create_soc2_access_record(user_data: Dict, team_data: Optional[Dict], group_data: Optional[Dict], role_data: Optional[Dict], connection_data: Optional[Dict]) -> Dict:
     """
     Create a SOC2 compliant access record showing user permissions and access levels.
     Args:
-        user_data: User information
-        team_data: Team information
-        group_data: Group information
-        role_data: Role information
-        connection_data: Connection information
+        user_data: User information (may be nested)
+        team_data: Team information (may be nested)
+        group_data: Group information (may be nested)
+        role_data: Role information (may be nested)
+        connection_data: Connection information (may be nested)
     Returns:
         Dictionary containing SOC2 access record
     """
+    # Extract nested data structures if present
+    user_data = extract_nested_data(user_data) if user_data else {}
+    team_data = extract_nested_data(team_data) if team_data else None
+    group_data = extract_nested_data(group_data) if group_data else None
+    role_data = extract_nested_data(role_data) if role_data else None
+    connection_data = extract_nested_data(connection_data) if connection_data else None
+    
     # Extract user information with fallbacks
     user_id = user_data.get('id') or user_data.get('user_id') or 'UNKNOWN_USER'
     user_email = user_data.get('email') or user_data.get('email_address') or 'unknown@example.com'
@@ -546,13 +642,125 @@ def create_soc2_access_record(user_data: Dict, team_data: Dict, group_data: Dict
     else:
         user_name = f"User {user_id}"
     
+    # Extract team information from API response structure
+    # Teams API response: {"code": "Success", "data": {"id": "...", "name": "...", "description": "...", "role": "..."}}
+    team_id = None
+    team_name = None
+    team_description = None
+    team_role = None
+    if team_data:
+        # Handle nested data structure
+        team_actual = extract_nested_data(team_data) if team_data else team_data
+        if team_actual:
+            team_id = team_actual.get('id') or team_actual.get('team_id')
+            team_name = team_actual.get('name') or team_actual.get('team_name') or team_actual.get('display_name')
+            team_description = team_actual.get('description')
+            team_role = team_actual.get('role')
+    
+    # Extract group information from API response structure
+    # Groups API response: {"code": "Success", "data": {"id": "...", "name": "...", "created_at": "..."}}
+    group_id = None
+    group_name = None
+    group_created_at = None
+    if group_data:
+        # Handle nested data structure
+        group_actual = extract_nested_data(group_data) if group_data else group_data
+        if group_actual:
+            group_id = group_actual.get('id') or group_actual.get('group_id')
+            group_name = group_actual.get('name') or group_actual.get('group_name') or group_actual.get('display_name')
+            group_created_at = group_actual.get('created_at')
+    
+    # Extract role information from API response structure
+    # Roles API response: {"code": "Success", "data": {"items": [{"name": "...", "description": "...", "scope": "...", ...}]}}
+    role_id = None
+    role_name = None
+    role_description = None
+    role_scope = None
+    role_is_deprecated = None
+    role_replacement_role_name = None
+    role_is_custom = None
+    if role_data:
+        # Handle nested data structure - roles might be in items array or direct
+        role_actual = extract_nested_data(role_data) if role_data else role_data
+        if role_actual:
+            # If it's a list (items array), take first item
+            if isinstance(role_actual, list) and len(role_actual) > 0:
+                role_actual = role_actual[0]
+            # Extract role fields
+            role_id = role_actual.get('name') or role_actual.get('id') or role_actual.get('role_id')
+            role_name = role_actual.get('name') or role_actual.get('role_name') or role_actual.get('display_name')
+            role_description = role_actual.get('description')
+            role_scope = role_actual.get('scope')
+            role_is_deprecated = role_actual.get('is_deprecated')
+            role_replacement_role_name = role_actual.get('replacement_role_name')
+            role_is_custom = role_actual.get('is_custom')
+    
+    # Extract connection information from API response structure
+    # Connections API response: {"code": "Success", "data": {"id": "...", "schema": "...", "service": "...", ...}}
+    # NOTE: Connection name is in the "schema" field per API documentation
+    connection_id = None
+    connection_name = None
+    connection_service = None
+    connection_schema = None
+    connection_paused = None
+    connection_group_id = None
+    connection_created_at = None
+    connection_status = None
+    connection_sync_frequency = None
+    connection_setup_status = None
+    connection_setup_tests_status = None
+    connection_destination_id = None
+    connection_connector_type = None
+    connection_connected_by = None
+    connection_connected_at = None
+    connection_succeeded_at = None
+    connection_failed_at = None
+    connection_schedule_type = None
+    connection_daily_sync_time = None
+    connection_region = None
+    if connection_data:
+        # Handle nested data structure
+        connection_actual = extract_nested_data(connection_data) if connection_data else connection_data
+        if connection_actual:
+            connection_id = connection_actual.get('id') or connection_actual.get('connection_id')
+            # Connection name is in the "schema" field per API documentation
+            connection_schema = connection_actual.get('schema')
+            connection_name = (connection_actual.get('schema') or  # Primary: schema field contains the name
+                             connection_actual.get('name') or 
+                             connection_actual.get('connection_name') or 
+                             connection_actual.get('service') or
+                             connection_actual.get('display_name'))
+            connection_service = connection_actual.get('service')
+            connection_paused = connection_actual.get('paused')
+            connection_group_id = connection_actual.get('group_id')
+            connection_created_at = connection_actual.get('created_at')
+            # Additional connection-level fields for comprehensive audit trail
+            connection_status = connection_actual.get('status') or connection_actual.get('setup_status')
+            connection_sync_frequency = connection_actual.get('sync_frequency')
+            connection_setup_status = connection_actual.get('setup_status')
+            connection_setup_tests_status = connection_actual.get('setup_tests_status')
+            connection_destination_id = connection_actual.get('destination_id')
+            connection_connector_type = connection_actual.get('connector_type') or connection_actual.get('service')
+            connection_connected_by = connection_actual.get('connected_by')
+            connection_connected_at = connection_actual.get('connected_at')
+            connection_succeeded_at = connection_actual.get('succeeded_at')
+            connection_failed_at = connection_actual.get('failed_at')
+            connection_schedule_type = connection_actual.get('schedule_type')
+            connection_daily_sync_time = connection_actual.get('daily_sync_time')
+            connection_region = connection_actual.get('region')
+    
     # Determine access level based on what data is provided
     if connection_data and group_data and role_data:
-        access_level = f"GRANULAR: {role_data.get('name', 'Unknown')} on {connection_data.get('name', 'Unknown Connection')}"
+        role_display = role_name or 'Unknown'
+        conn_display = connection_name or 'Unknown Connection'
+        access_level = f"GRANULAR: {role_display} on {conn_display}"
     elif group_data and role_data:
-        access_level = f"TEAM_LEVEL: {role_data.get('name', 'Unknown')} in {group_data.get('name', 'Unknown Group')}"
+        role_display = role_name or 'Unknown'
+        group_display = group_name or 'Unknown Group'
+        access_level = f"TEAM_LEVEL: {role_display} in {group_display}"
     elif connection_data:
-        access_level = f"CONNECTION_LEVEL: Access to {connection_data.get('name', 'Unknown Connection')}"
+        conn_display = connection_name or 'Unknown Connection'
+        access_level = f"CONNECTION_LEVEL: Access to {conn_display}"
     else:
         access_level = "BASE_LEVEL: System User"
     
@@ -560,26 +768,67 @@ def create_soc2_access_record(user_data: Dict, team_data: Dict, group_data: Dict
     access_type = "GRANULAR" if (connection_data and group_data) else "TEAM" if group_data else "CONNECTION" if connection_data else "BASE"
     record_id = f"{user_id}_{access_type}_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
     
-    return {
+    # Extract permissions with fallbacks
+    permissions = []
+    if role_data:
+        permissions = role_data.get('permissions', []) or role_data.get('permission', []) or []
+        if not isinstance(permissions, list):
+            permissions = [permissions] if permissions else []
+    
+    # Build comprehensive audit record with all extracted fields
+    audit_record = {
         "access_record_id": record_id,
         "user_id": user_id,
         "user_email": user_email,
         "user_name": user_name,
-        "team_id": team_data.get('id') if team_data else None,
-        "team_name": team_data.get('name') if team_data else None,
-        "group_id": group_data.get('id') if group_data else None,
-        "group_name": group_data.get('name') if group_data else None,
-        "role_id": role_data.get('name') if role_data else None,  # Roles use name as ID
-        "role_name": role_data.get('name') if role_data else None,
-        "connection_id": connection_data.get('id') if connection_data else None,
-        "connection_name": connection_data.get('name') if connection_data else None,
+        # Team fields
+        "team_id": team_id,
+        "team_name": team_name,
+        "team_description": team_description,
+        "team_role": team_role,
+        # Group fields
+        "group_id": group_id,
+        "group_name": group_name,
+        "group_created_at": group_created_at,
+        # Role fields
+        "role_id": role_id,
+        "role_name": role_name,
+        "role_description": role_description,
+        "role_scope": role_scope,
+        "role_is_deprecated": role_is_deprecated,
+        "role_replacement_role_name": role_replacement_role_name,
+        "role_is_custom": role_is_custom,
+        # Connection fields
+        "connection_id": connection_id,
+        "connection_name": connection_name,
+        "connection_service": connection_service,
+        # "connection_schema": connection_schema,
+        # "connection_paused": connection_paused,
+        "connection_group_id": connection_group_id,
+        "connection_created_at": connection_created_at,
+        # "connection_status": connection_status,
+        # "connection_sync_frequency": connection_sync_frequency,
+        # "connection_setup_status": connection_setup_status,
+        # "connection_setup_tests_status": connection_setup_tests_status,
+        # "connection_destination_id": connection_destination_id,
+        # "connection_connector_type": connection_connector_type,
+        # "connection_connected_by": connection_connected_by,
+        # "connection_connected_at": connection_connected_at,
+        # "connection_succeeded_at": connection_succeeded_at,
+        # "connection_failed_at": connection_failed_at,
+        # "connection_schedule_type": connection_schedule_type,
+        # "connection_daily_sync_time": connection_daily_sync_time,
+        # "connection_region": connection_region,
+        # Access control fields
         "access_level": access_level,
         "access_type": access_type,  # GRANULAR, TEAM, CONNECTION, BASE
-        "permissions": json.dumps(role_data.get('permissions', [])) if role_data else json.dumps([]),
+        "permissions": json.dumps(permissions),
         "last_accessed": datetime.now().isoformat(),
         "compliance_status": "ACTIVE",
         "audit_timestamp": datetime.now().isoformat()
     }
+    
+    return audit_record
 
 def schema(configuration: dict):
     """
@@ -770,6 +1019,10 @@ def update(configuration: dict, state: dict):
                 api_log = create_api_log_record(f'users/{user_id}/connections', 'GET', None, {'data': user_connections, 'count': len(user_connections)}, 'SUCCESS')
                 op.upsert(table="api_logs", data=api_log)
                 record_count += 1
+                
+                # Log connection IDs for debugging
+                connection_ids = [conn.get('id') or conn.get('connection_id') for conn in user_connections if conn.get('id') or conn.get('connection_id')]
+                log_structured("info", "User connection IDs", user_id=user_id, connection_ids=connection_ids)
 
             # Fetch user groups
             user_groups = get_user_groups(headers, session, user_id)
@@ -780,32 +1033,141 @@ def update(configuration: dict, state: dict):
                 op.upsert(table="api_logs", data=api_log)
                 record_count += 1
 
+            # Fetch all connections from groups the user belongs to
+            # This captures all connections the user has access to through group membership
+            group_connections = []
+            group_connections_map = {}  # Map connection_id to group_id for tracking access source
+            
+            for group in user_groups:
+                group_id = group.get('id') or group.get('group_id')
+                if not group_id:
+                    continue
+                
+                log_structured("info", f"Fetching connections for group", user_id=user_id, group_id=group_id)
+                
+                # Fetch all connections for this group (with pagination)
+                cursor = None
+                while True:
+                    group_conns_batch, next_cursor = get_group_connections(headers, session, group_id, limit=100, cursor=cursor)
+                    for conn in group_conns_batch:
+                        conn_id = conn.get('id') or conn.get('connection_id')
+                        if conn_id:
+                            # Track which group this connection belongs to
+                            if conn_id not in group_connections_map:
+                                group_connections.append(conn)
+                                group_connections_map[conn_id] = group_id
+                            else:
+                                # Connection already added from another group, just track additional group
+                                pass
+                    
+                    if not next_cursor:
+                        break
+                    cursor = next_cursor
+                
+                # Create API log record for group connections endpoint
+                if group_conns_batch:
+                    api_log = create_api_log_record(f'groups/{group_id}/connectors', 'GET', None, 
+                                                    {'data': group_conns_batch, 'count': len(group_conns_batch)}, 'SUCCESS')
+                    op.upsert(table="api_logs", data=api_log)
+                    record_count += 1
+            
+            log_structured("info", f"Found connections from groups", user_id=user_id, 
+                          group_connection_count=len(group_connections))
+            
+            # Combine direct user connections with group connections
+            # Use a set to track unique connection IDs to avoid duplicates
+            all_accessible_connections = []
+            seen_connection_ids = set()
+            
+            # Add direct user connections first
+            for conn in user_connections:
+                conn_id = conn.get('id') or conn.get('connection_id')
+                if conn_id and conn_id not in seen_connection_ids:
+                    all_accessible_connections.append(conn)
+                    seen_connection_ids.add(conn_id)
+            
+            # Add group connections (these represent connections user has access to through groups)
+            for conn in group_connections:
+                conn_id = conn.get('id') or conn.get('connection_id')
+                if conn_id and conn_id not in seen_connection_ids:
+                    all_accessible_connections.append(conn)
+                    seen_connection_ids.add(conn_id)
+            
+            log_structured("info", f"Total accessible connections for user", user_id=user_id,
+                          direct_connections=len(user_connections),
+                          group_connections=len(group_connections),
+                          total_unique_connections=len(all_accessible_connections))
+
             # Create comprehensive SOC2 access control records showing complete access hierarchy
             # Optimize: Create only unique access combinations to avoid exponential record growth
             log_structured("info", f"Creating SOC2 records for user", user_id=user_id, 
-                          connection_count=len(user_connections), group_count=len(user_groups))
+                          connection_count=len(all_accessible_connections), group_count=len(user_groups))
             soc2_records_created = 0
             
-            user_data = user_details.get('data') if user_details and 'data' in user_details else user
+            # Extract user data, handling nested structures
+            if user_details:
+                # Check if user_details has nested 'data' structure
+                if 'data' in user_details:
+                    user_data = user_details['data']
+                    # Check for double nesting
+                    if isinstance(user_data, dict) and 'data' in user_data:
+                        user_data = user_data['data']
+                else:
+                    user_data = user_details
+            else:
+                user_data = user
             
             # Track unique access combinations to avoid duplicates
             access_combinations = set()
             
+            # Cache for group and connection details to avoid redundant API calls
+            groups_details_cache = {}
+            connections_details_cache = {}
+            
             # 1. Create records for each group (team-level access) - only if not already covered by granular
             for group in user_groups:
-                team_id = group.get('team_id')
+                group_id = group.get('id') or group.get('group_id')
+                
+                # Fetch full group details if not in cache
+                if group_id and group_id not in groups_details_cache:
+                    group_details_response = get_group_details(headers, session, group_id)
+                    if group_details_response:
+                        groups_details_cache[group_id] = group_details_response
+                        # Create API log record for group details endpoint
+                        api_log = create_api_log_record(f'groups/{group_id}', 'GET', None, group_details_response, 'SUCCESS')
+                        op.upsert(table="api_logs", data=api_log)
+                        record_count += 1
+                    else:
+                        groups_details_cache[group_id] = group  # Fallback to minimal data
+                elif group_id:
+                    group_details_response = groups_details_cache.get(group_id, group)
+                else:
+                    group_details_response = group
+                
+                team_id = group.get('team_id') or group.get('teamId')
                 team_data = teams_lookup.get(team_id) if team_id else None
-                role_name = group.get('role_name') or group.get('role')
+                role_name = group.get('role_name') or group.get('role') or group.get('roleName')
                 role_data = roles_lookup.get(role_name) if role_name else None
                 
+                # Debug logging for first group to understand data structure
+                if soc2_records_created == 0:
+                    log_structured("info", "Sample group data structure", 
+                                  group_keys=list(group.keys()) if group else [],
+                                  group_id=group_id,
+                                  group_name=group.get('name'),
+                                  team_id=team_id,
+                                  team_data_keys=list(team_data.keys()) if team_data else [],
+                                  role_name=role_name,
+                                  role_data_keys=list(role_data.keys()) if role_data else [])
+                
                 # Only create team-level record if user has no connections (to avoid redundancy)
-                if not user_connections:
-                    access_key = f"TEAM_{team_id}_{group.get('id')}"
+                if not all_accessible_connections:
+                    access_key = f"TEAM_{team_id}_{group_id}"
                     if access_key not in access_combinations:
                         soc2_record = create_soc2_access_record(
                             user_data,
                             team_data,
-                            group,
+                            group_details_response,  # Use full group details
                             role_data,
                             None  # No specific connection - team-level access
                         )
@@ -816,25 +1178,101 @@ def update(configuration: dict, state: dict):
             
             # 2. Create granular records for each connection-group combination (most specific access)
             # This covers both connection-level and team-level access in one record
-            for connection in user_connections:
-                connection_id = connection.get('id')
+            # Process all connections the user has access to (both direct and through groups)
+            for connection in all_accessible_connections:
+                connection_id = connection.get('id') or connection.get('connection_id')
+                
+                # Fetch full connection details if not in cache
+                if connection_id and connection_id not in connections_details_cache:
+                    connection_details_response = get_connection_details(headers, session, connection_id)
+                    if connection_details_response:
+                        connections_details_cache[connection_id] = connection_details_response
+                        # Create API log record for connection details endpoint
+                        api_log = create_api_log_record(f'connections/{connection_id}', 'GET', None, connection_details_response, 'SUCCESS')
+                        op.upsert(table="api_logs", data=api_log)
+                        record_count += 1
+                        
+                        # Log connection details structure for debugging
+                        connection_actual = extract_nested_data(connection_details_response)
+                        log_structured("info", "Fetched connection details", 
+                                      connection_id=connection_id,
+                                      has_schema=bool(connection_actual.get('schema') if connection_actual else None),
+                                      has_service=bool(connection_actual.get('service') if connection_actual else None),
+                                      has_status=bool(connection_actual.get('status') if connection_actual else None),
+                                      connection_keys=list(connection_actual.keys()) if connection_actual and isinstance(connection_actual, dict) else [])
+                    else:
+                        # Fallback to minimal data from user_connections list
+                        log_structured("warning", "Failed to fetch connection details, using minimal data", 
+                                      connection_id=connection_id)
+                        connections_details_cache[connection_id] = connection  # Fallback to minimal data
+                elif connection_id:
+                    connection_details_response = connections_details_cache.get(connection_id, connection)
+                else:
+                    connection_details_response = connection
+                
+                # Debug logging for first connection to understand data structure
+                if soc2_records_created == 0 and user_groups:
+                    log_structured("info", "Sample connection data structure", 
+                                  connection_keys=list(connection.keys()) if connection else [],
+                                  connection_id=connection_id,
+                                  connection_name=connection.get('name'),
+                                  connection_schema=connection.get('schema'))
+                
+                # Determine which groups this connection belongs to
+                # Check if this connection came from a group (via group_connections_map)
+                connection_source_group_id = group_connections_map.get(connection_id)
                 
                 # If user has groups, create granular records
+                # For connections from groups, create records linking to those specific groups
+                # For direct user connections, create records for all user groups
                 if user_groups:
-                    for group in user_groups:
-                        team_id = group.get('team_id')
+                    # Determine which groups to associate with this connection
+                    groups_to_associate = []
+                    
+                    if connection_source_group_id:
+                        # Connection came from a specific group - associate with that group
+                        source_group = next((g for g in user_groups if (g.get('id') or g.get('group_id')) == connection_source_group_id), None)
+                        if source_group:
+                            groups_to_associate = [source_group]
+                        else:
+                            # Fallback: associate with all user groups if source group not found
+                            groups_to_associate = user_groups
+                    else:
+                        # Direct user connection - associate with all user groups
+                        groups_to_associate = user_groups
+                    
+                    for group in groups_to_associate:
+                        group_id = group.get('id') or group.get('group_id')
+                        
+                        # Fetch full group details if not in cache
+                        if group_id and group_id not in groups_details_cache:
+                            group_details_response = get_group_details(headers, session, group_id)
+                            if group_details_response:
+                                groups_details_cache[group_id] = group_details_response
+                                # Create API log record for group details endpoint
+                                api_log = create_api_log_record(f'groups/{group_id}', 'GET', None, group_details_response, 'SUCCESS')
+                                op.upsert(table="api_logs", data=api_log)
+                                record_count += 1
+                            else:
+                                groups_details_cache[group_id] = group  # Fallback to minimal data
+                        elif group_id:
+                            group_details_response = groups_details_cache.get(group_id, group)
+                        else:
+                            group_details_response = group
+                        
+                        team_id = group.get('team_id') or group.get('teamId')
                         team_data = teams_lookup.get(team_id) if team_id else None
-                        role_name = group.get('role_name') or group.get('role')
+                        role_name = group.get('role_name') or group.get('role') or group.get('roleName')
                         role_data = roles_lookup.get(role_name) if role_name else None
                         
-                        access_key = f"GRANULAR_{connection_id}_{group.get('id')}"
+                        access_key = f"GRANULAR_{connection_id}_{group_id}"
                         if access_key not in access_combinations:
                             soc2_record = create_soc2_access_record(
                                 user_data,
                                 team_data,
-                                group,
+                                group_details_response,  # Use full group details
                                 role_data,
-                                connection
+                                connection_details_response  # Use full connection details
                             )
                             op.upsert(table="soc2_access_control", data=soc2_record)
                             soc2_records_created += 1
@@ -844,21 +1282,38 @@ def update(configuration: dict, state: dict):
                     # No groups - create connection-level record
                     access_key = f"CONNECTION_{connection_id}"
                     if access_key not in access_combinations:
+                        # Log connection details for debugging
+                        if connection_details_response:
+                            connection_actual = extract_nested_data(connection_details_response)
+                            log_structured("info", "Creating connection-level record", 
+                                          user_id=user_id, connection_id=connection_id,
+                                          connection_name=connection_actual.get('schema') if connection_actual else None,
+                                          connection_service=connection_actual.get('service') if connection_actual else None,
+                                          connection_status=connection_actual.get('status') if connection_actual else None)
+                        
                         soc2_record = create_soc2_access_record(
                             user_data,
                             None,  # No team data
                             None,  # No group data
                             None,  # No role data
-                            connection
+                            connection_details_response  # Use full connection details
                         )
                         op.upsert(table="soc2_access_control", data=soc2_record)
                         soc2_records_created += 1
                         record_count += 1
                         access_combinations.add(access_key)
+                        
+                        # Log the created record to verify connection information
+                        log_structured("info", "Created connection-level SOC2 record", 
+                                      access_record_id=soc2_record.get('access_record_id'),
+                                      connection_id=soc2_record.get('connection_id'),
+                                      connection_name=soc2_record.get('connection_name'),
+                                      connection_service=soc2_record.get('connection_service'),
+                                      connection_status=soc2_record.get('connection_status'))
             
             # 3. Create a base-level record for all users (shows user exists in system)
             # Only if user has no connections or groups
-            if not user_connections and not user_groups:
+            if not all_accessible_connections and not user_groups:
                 soc2_record = create_soc2_access_record(
                     user_data,
                     None,  # No team data
