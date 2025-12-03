@@ -6,7 +6,9 @@
   "client_secret": "123",
   "rate_limit_delay": "0.5",
   "page_size": "40",
-  "max_records_per_sync": "10000",
-  "initial_sync_days": "30",
-  "enable_debug": "true/false"
+  "max_records_per_sync": "",
+  "initial_sync_days": "",
+  "enable_debug": "true/false",
+  "request_timeout": "120",
+  "max_retries": "3"    
 }
