@@ -12,8 +12,10 @@ Key Features:
 - Cursor-based pagination for efficient data retrieval
 - Incremental sync using updatedOn timestamp filtering
 - Nested data flattening for complex GraphQL responses
-- Error handling and retry logic
+- Error handling and retry logic with exponential backoff for timeouts
 - Rate limiting support
+- Optional max_records_per_sync limit (empty string = sync all data)
+- Configurable request timeout and retry attempts
 
 References:
 - SDK Docs: https://fivetran.com/docs/connector-sdk
@@ -219,10 +221,12 @@ def execute_graphql_query(
     query: str,
     variables: Dict[str, Any],
     rate_limit_delay: float = 0.0,
-    debug: bool = False
+    debug: bool = False,
+    timeout: int = 120,
+    max_retries: int = 3
 ) -> Dict[str, Any]:
     """
-    Execute a GraphQL query against the API.
+    Execute a GraphQL query against the API with retry logic for timeouts.
     
     Args:
         base_url: Base URL of the API
@@ -231,12 +235,14 @@ def execute_graphql_query(
         variables: GraphQL query variables
         rate_limit_delay: Delay in seconds before making request (for rate limiting)
         debug: Whether to dump response to debug_resp.json
+        timeout: Request timeout in seconds (default: 120)
+        max_retries: Maximum number of retry attempts for timeout errors (default: 3)
         
     Returns:
         GraphQL response data
         
     Raises:
-        RuntimeError: If the GraphQL request fails
+        RuntimeError: If the GraphQL request fails after all retries
     """
     # Apply rate limiting delay
     if rate_limit_delay > 0:
@@ -255,37 +261,60 @@ def execute_graphql_query(
         "variables": variables
     }
     
-    try:
-        log.info(f"Executing GraphQL query with cursor: {variables.get('afterCursor', 'None')}")
-        response = requests.post(
-            graphql_url,
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
-        response.raise_for_status()
+    # Retry logic with exponential backoff for timeout errors
+    last_exception = None
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                # Exponential backoff: 2^attempt seconds
+                backoff_delay = 2 ** attempt
+                log.warning(f"Retrying GraphQL query (attempt {attempt + 1}/{max_retries + 1}) after {backoff_delay}s delay...")
+                time.sleep(backoff_delay)
+            
+            log.info(f"Executing GraphQL query with cursor: {variables.get('afterCursor', 'None')}")
+            response = requests.post(
+                graphql_url,
+                headers=headers,
+                json=payload,
+                timeout=timeout
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            
+            # Debug: Dump response to file
+            if debug:
+                try:
+                    with open("debug_resp.json", "w", encoding="utf-8") as f:
+                        json.dump(result, f, indent=2, ensure_ascii=False)
+                    log.info("Debug: Response dumped to debug_resp.json")
+                except Exception as e:
+                    log.warning(f"Failed to write debug_resp.json: {str(e)}")
+            
+            # Check for GraphQL errors
+            if "errors" in result:
+                error_messages = [err.get("message", "Unknown error") for err in result["errors"]]
+                raise RuntimeError(f"GraphQL errors: {', '.join(error_messages)}")
+            
+            return result.get("data", {})
+            
+        except requests.exceptions.ReadTimeout as e:
+            last_exception = e
+            if attempt < max_retries:
+                log.warning(f"Read timeout on attempt {attempt + 1}/{max_retries + 1}: {str(e)}")
+                continue
+            else:
+                log.severe(f"GraphQL request timed out after {max_retries + 1} attempts")
+                raise RuntimeError(f"Failed to execute GraphQL query after {max_retries + 1} attempts: Read timeout (timeout={timeout}s)")
         
-        result = response.json()
-        
-        # Debug: Dump response to file
-        if debug:
-            try:
-                with open("debug_resp.json", "w", encoding="utf-8") as f:
-                    json.dump(result, f, indent=2, ensure_ascii=False)
-                log.info("Debug: Response dumped to debug_resp.json")
-            except Exception as e:
-                log.warning(f"Failed to write debug_resp.json: {str(e)}")
-        
-        # Check for GraphQL errors
-        if "errors" in result:
-            error_messages = [err.get("message", "Unknown error") for err in result["errors"]]
-            raise RuntimeError(f"GraphQL errors: {', '.join(error_messages)}")
-        
-        return result.get("data", {})
-        
-    except requests.exceptions.RequestException as e:
-        log.severe(f"GraphQL request failed: {str(e)}")
-        raise RuntimeError(f"Failed to execute GraphQL query: {str(e)}")
+        except requests.exceptions.RequestException as e:
+            # For non-timeout errors, don't retry
+            log.severe(f"GraphQL request failed: {str(e)}")
+            raise RuntimeError(f"Failed to execute GraphQL query: {str(e)}")
+    
+    # Should not reach here, but handle just in case
+    if last_exception:
+        raise RuntimeError(f"Failed to execute GraphQL query after {max_retries + 1} attempts: {str(last_exception)}")
 
 
 # =============================================================================
@@ -348,7 +377,6 @@ def process_order_data(order_node: Dict[str, Any], order_id: str) -> Dict[str, L
         
         if item_id:
             # Order item record
-            print(item_node)
             item_record = {
                 "id": item_id,
                 "order_id": order_id,
@@ -499,8 +527,25 @@ def update(configuration: dict, state: dict) -> None:
     base_url = configuration.get("base_url", "").rstrip("/")
     rate_limit_delay = float(configuration.get("rate_limit_delay", "0.5"))
     page_size = int(configuration.get("page_size", "40"))
-    max_records_per_sync = int(configuration.get("max_records_per_sync", "10000"))
+    
+    # Handle max_records_per_sync - optional, empty string means no limit
+    max_records_per_sync_str = configuration.get("max_records_per_sync", "10000")
+    if max_records_per_sync_str == "" or max_records_per_sync_str is None:
+        max_records_per_sync = None
+        log.info("max_records_per_sync not set - will sync all available data")
+    else:
+        try:
+            max_records_per_sync = int(max_records_per_sync_str)
+            log.info(f"max_records_per_sync set to {max_records_per_sync}")
+        except (ValueError, TypeError):
+            log.warning(f"Invalid max_records_per_sync value '{max_records_per_sync_str}', defaulting to no limit")
+            max_records_per_sync = None
+    
     enable_debug = configuration.get("enable_debug", "false").lower() == "true"
+    
+    # Get timeout configuration (default: 120 seconds)
+    timeout = int(configuration.get("request_timeout", "120"))
+    max_retries = int(configuration.get("max_retries", "3"))
     
     # Get state for incremental sync
     last_updated_on = state.get("last_updated_on")
@@ -533,7 +578,8 @@ def update(configuration: dict, state: dict) -> None:
         latest_updated_on = min_dt
         
         # Process all pages
-        while has_next_page and orders_processed < max_records_per_sync:
+        # Only check max_records_per_sync limit if it's set (not None)
+        while has_next_page and (max_records_per_sync is None or orders_processed < max_records_per_sync):
             # Prepare GraphQL variables
             variables = {
                 "afterCursor": cursor,
@@ -549,7 +595,9 @@ def update(configuration: dict, state: dict) -> None:
                 query=ORDERS_QUERY,
                 variables=variables,
                 rate_limit_delay=rate_limit_delay,
-                debug=dump_debug
+                debug=dump_debug,
+                timeout=timeout,
+                max_retries=max_retries
             )
             
             # Extract orders data
@@ -598,7 +646,8 @@ def update(configuration: dict, state: dict) -> None:
                 log.info("No more pages to process")
                 break
             
-            if orders_processed >= max_records_per_sync:
+            # Only check limit if max_records_per_sync is set
+            if max_records_per_sync is not None and orders_processed >= max_records_per_sync:
                 log.warning(f"Reached max orders limit ({max_records_per_sync}), stopping sync")
                 break
         
