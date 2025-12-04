@@ -8,7 +8,8 @@ This connector syncs orders data from the FluentRetail GraphQL API using:
 - GraphQL query execution with nested data handling
 
 Key Features:
-- OAuth token management with automatic refresh
+- OAuth token management with automatic refresh on expiration
+- Automatic token refresh when 401/403 errors or GraphQL auth errors are detected
 - Cursor-based pagination for efficient data retrieval
 - Incremental sync using updatedOn timestamp filtering
 - Nested data flattening for complex GraphQL responses
@@ -37,13 +38,15 @@ from fivetran_connector_sdk import Operations as op
 import json
 import time
 import requests
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta
-from urllib.parse import urlencode
+from typing import Dict, Any, Optional, Callable, List, Tuple
+from datetime import datetime, timedelta, timezone
 
 # =============================================================================
 # CONSTANTS
 # =============================================================================
+
+# Checkpoint interval: checkpoint state every N orders processed
+DEFAULT_CHECKPOINT_INTERVAL = 100
 
 # GraphQL query for fetching orders with pagination and date filtering
 ORDERS_QUERY = """
@@ -138,7 +141,7 @@ query OrdersQuery($afterCursor: String, $min_dt: DateTime, $max_dt: DateTime) {
 # CONFIGURATION VALIDATION
 # =============================================================================
 
-def validate_configuration(configuration: dict) -> None:
+def validate_configuration(configuration: Dict[str, Any]) -> None:
     """
     Validate that all required configuration parameters are present.
     
@@ -167,7 +170,7 @@ def validate_configuration(configuration: dict) -> None:
 # AUTHENTICATION
 # =============================================================================
 
-def get_access_token(configuration: dict) -> str:
+def get_access_token(configuration: Dict[str, Any]) -> str:
     """
     Authenticate with OAuth 2.0 password grant and retrieve access token.
     
@@ -215,6 +218,43 @@ def get_access_token(configuration: dict) -> str:
 # GRAPHQL REQUEST HANDLING
 # =============================================================================
 
+def _refresh_token_if_needed(
+    get_token_callback: Optional[Callable[[], str]],
+    token_refreshed: bool,
+    current_token: str,
+    headers: Dict[str, str],
+    error_context: str = ""
+) -> Tuple[str, bool]:
+    """
+    Helper function to refresh token if callback is available and token hasn't been refreshed yet.
+    
+    Args:
+        get_token_callback: Optional callback function to refresh token
+        token_refreshed: Whether token has already been refreshed
+        current_token: Current token value
+        headers: Request headers dictionary to update
+        error_context: Context string for logging (e.g., "HTTP 401")
+        
+    Returns:
+        Tuple of (new_token, was_refreshed)
+        
+    Raises:
+        RuntimeError: If token refresh fails
+    """
+    if get_token_callback and not token_refreshed:
+        log.warning(f"Token expired ({error_context}), refreshing token...")
+        try:
+            new_token = get_token_callback()
+            headers["Authorization"] = f"Bearer {new_token}"
+            log.info("Token refreshed successfully, retrying request...")
+            return new_token, True
+        except Exception as e:
+            log.severe(f"Failed to refresh token: {str(e)}")
+            raise RuntimeError(f"Token expired and refresh failed: {str(e)}")
+    
+    return current_token, token_refreshed
+
+
 def execute_graphql_query(
     base_url: str,
     access_token: str,
@@ -223,20 +263,22 @@ def execute_graphql_query(
     rate_limit_delay: float = 0.0,
     debug: bool = False,
     timeout: int = 120,
-    max_retries: int = 3
+    max_retries: int = 3,
+    get_token_callback: Optional[Callable[[], str]] = None
 ) -> Dict[str, Any]:
     """
-    Execute a GraphQL query against the API with retry logic for timeouts.
+    Execute a GraphQL query against the API with retry logic for timeouts and automatic token refresh.
     
     Args:
         base_url: Base URL of the API
-        access_token: OAuth access token
+        access_token: OAuth access token (may be refreshed if expired)
         query: GraphQL query string
         variables: GraphQL query variables
         rate_limit_delay: Delay in seconds before making request (for rate limiting)
         debug: Whether to dump response to debug_resp.json
         timeout: Request timeout in seconds (default: 120)
         max_retries: Maximum number of retry attempts for timeout errors (default: 3)
+        get_token_callback: Optional callback function to refresh token on expiration (should return new token string)
         
     Returns:
         GraphQL response data
@@ -250,8 +292,11 @@ def execute_graphql_query(
     
     graphql_url = f"{base_url}/graphql"
     
+    # Use a mutable token variable that can be updated on refresh
+    current_token = access_token
+    
     headers = {
-        "Authorization": f"Bearer {access_token}",
+        "Authorization": f"Bearer {current_token}",
         "Content-Type": "application/json",
         "Accept": "application/json"
     }
@@ -261,8 +306,10 @@ def execute_graphql_query(
         "variables": variables
     }
     
-    # Retry logic with exponential backoff for timeout errors
+    # Retry logic with exponential backoff for timeout errors and token refresh for auth errors
     last_exception = None
+    token_refreshed = False
+    
     for attempt in range(max_retries + 1):
         try:
             if attempt > 0:
@@ -278,6 +325,23 @@ def execute_graphql_query(
                 json=payload,
                 timeout=timeout
             )
+            
+            # Check for authentication errors (401 Unauthorized, 403 Forbidden)
+            if response.status_code in [401, 403]:
+                current_token, token_refreshed = _refresh_token_if_needed(
+                    get_token_callback=get_token_callback,
+                    token_refreshed=token_refreshed,
+                    current_token=current_token,
+                    headers=headers,
+                    error_context=f"HTTP {response.status_code}"
+                )
+                if token_refreshed:
+                    # Retry immediately with new token (don't count as retry attempt)
+                    continue
+                else:
+                    # Token refresh failed or not available
+                    response.raise_for_status()
+            
             response.raise_for_status()
             
             result = response.json()
@@ -291,9 +355,25 @@ def execute_graphql_query(
                 except Exception as e:
                     log.warning(f"Failed to write debug_resp.json: {str(e)}")
             
-            # Check for GraphQL errors
+            # Check for GraphQL errors (including auth errors in GraphQL response)
             if "errors" in result:
                 error_messages = [err.get("message", "Unknown error") for err in result["errors"]]
+                error_text = ', '.join(error_messages).lower()
+                
+                # Check if errors indicate token expiration
+                auth_keywords = ["unauthorized", "authentication", "token", "expired", "invalid token"]
+                if any(keyword in error_text for keyword in auth_keywords):
+                    current_token, token_refreshed = _refresh_token_if_needed(
+                        get_token_callback=get_token_callback,
+                        token_refreshed=token_refreshed,
+                        current_token=current_token,
+                        headers=headers,
+                        error_context="GraphQL errors"
+                    )
+                    if token_refreshed:
+                        # Retry immediately with new token (don't count as retry attempt)
+                        continue
+                
                 raise RuntimeError(f"GraphQL errors: {', '.join(error_messages)}")
             
             return result.get("data", {})
@@ -307,8 +387,25 @@ def execute_graphql_query(
                 log.severe(f"GraphQL request timed out after {max_retries + 1} attempts")
                 raise RuntimeError(f"Failed to execute GraphQL query after {max_retries + 1} attempts: Read timeout (timeout={timeout}s)")
         
+        except requests.exceptions.HTTPError as e:
+            # Handle HTTP errors that aren't auth-related
+            if e.response and e.response.status_code in [401, 403]:
+                # Already handled above, but catch here if it slipped through
+                current_token, token_refreshed = _refresh_token_if_needed(
+                    get_token_callback=get_token_callback,
+                    token_refreshed=token_refreshed,
+                    current_token=current_token,
+                    headers=headers,
+                    error_context=f"HTTP {e.response.status_code}"
+                )
+                if token_refreshed:
+                    continue
+            # For other HTTP errors, don't retry
+            log.severe(f"GraphQL request failed with HTTP error: {str(e)}")
+            raise RuntimeError(f"Failed to execute GraphQL query: {str(e)}")
+        
         except requests.exceptions.RequestException as e:
-            # For non-timeout errors, don't retry
+            # For other request errors, don't retry
             log.severe(f"GraphQL request failed: {str(e)}")
             raise RuntimeError(f"Failed to execute GraphQL query: {str(e)}")
     
@@ -460,7 +557,7 @@ def process_order_data(order_node: Dict[str, Any], order_id: str) -> Dict[str, L
 # SCHEMA DEFINITION
 # =============================================================================
 
-def schema(configuration: dict):
+def schema(configuration: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Define the schema for all tables.
     
@@ -505,7 +602,7 @@ def schema(configuration: dict):
 # DATA SYNC LOGIC
 # =============================================================================
 
-def update(configuration: dict, state: dict) -> None:
+def update(configuration: Dict[str, Any], state: Dict[str, Any]) -> None:
     """
     Main sync function called by Fivetran.
     
@@ -526,7 +623,6 @@ def update(configuration: dict, state: dict) -> None:
     # Extract configuration parameters
     base_url = configuration.get("base_url", "").rstrip("/")
     rate_limit_delay = float(configuration.get("rate_limit_delay", "0.5"))
-    page_size = int(configuration.get("page_size", "40"))
     
     # Handle max_records_per_sync - optional, empty string means no limit
     max_records_per_sync_str = configuration.get("max_records_per_sync", "10000")
@@ -547,6 +643,9 @@ def update(configuration: dict, state: dict) -> None:
     timeout = int(configuration.get("request_timeout", "120"))
     max_retries = int(configuration.get("max_retries", "3"))
     
+    # Get checkpoint interval (default: 100 orders)
+    checkpoint_interval = int(configuration.get("checkpoint_interval", str(DEFAULT_CHECKPOINT_INTERVAL)))
+    
     # Get state for incremental sync
     last_updated_on = state.get("last_updated_on")
     last_cursor = state.get("last_cursor")
@@ -558,10 +657,10 @@ def update(configuration: dict, state: dict) -> None:
     else:
         # Default to 30 days ago for first sync
         default_days = int(configuration.get("initial_sync_days", "30"))
-        min_dt = (datetime.utcnow() - timedelta(days=default_days)).isoformat() + "Z"
+        min_dt = (datetime.now(timezone.utc) - timedelta(days=default_days)).isoformat()
     
     # Set max_dt to current time
-    max_dt = datetime.utcnow().isoformat() + "Z"
+    max_dt = datetime.now(timezone.utc).isoformat()
     
     log.info(f"Starting sync from {min_dt} to {max_dt}")
     if enable_debug:
@@ -569,7 +668,16 @@ def update(configuration: dict, state: dict) -> None:
     
     try:
         # Authenticate and get access token
-        access_token = get_access_token(configuration)
+        # Use a list to hold the token so it can be mutated by the refresh callback
+        token_holder = [get_access_token(configuration)]
+        
+        # Create token refresh callback for automatic token refresh on expiration
+        def refresh_token():
+            """Callback function to refresh access token when it expires."""
+            log.info("Refreshing access token due to expiration...")
+            new_token = get_access_token(configuration)
+            token_holder[0] = new_token  # Update the token in the holder
+            return new_token
         
         # Initialize pagination variables
         cursor = last_cursor if last_cursor else None
@@ -588,16 +696,19 @@ def update(configuration: dict, state: dict) -> None:
             }
             
             # Execute GraphQL query (only dump first response if debug enabled)
+            # Pass token refresh callback for automatic token refresh on expiration
+            # Use token_holder[0] to get current token, which will be updated if refreshed
             dump_debug = enable_debug and cursor is None
             data = execute_graphql_query(
                 base_url=base_url,
-                access_token=access_token,
+                access_token=token_holder[0],
                 query=ORDERS_QUERY,
                 variables=variables,
                 rate_limit_delay=rate_limit_delay,
                 debug=dump_debug,
                 timeout=timeout,
-                max_retries=max_retries
+                max_retries=max_retries,
+                get_token_callback=refresh_token
             )
             
             # Extract orders data
@@ -630,8 +741,8 @@ def update(configuration: dict, state: dict) -> None:
                 
                 orders_processed += 1
                 
-                # Checkpoint periodically (every 100 orders)
-                if orders_processed % 100 == 0:
+                # Checkpoint periodically based on configured interval
+                if orders_processed % checkpoint_interval == 0:
                     new_state = {
                         "last_updated_on": latest_updated_on,
                         "last_cursor": cursor
