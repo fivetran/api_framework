@@ -742,6 +742,8 @@ def update(configuration: Dict[str, Any], state: Dict[str, Any]) -> None:
                 orders_processed += 1
                 
                 # Checkpoint periodically based on configured interval
+                # Only checkpoint after successfully processing records
+                # This ensures we can resume from the last successful checkpoint if sync fails
                 if orders_processed % checkpoint_interval == 0:
                     new_state = {
                         "last_updated_on": latest_updated_on,
@@ -762,7 +764,9 @@ def update(configuration: Dict[str, Any], state: Dict[str, Any]) -> None:
                 log.warning(f"Reached max orders limit ({max_records_per_sync}), stopping sync")
                 break
         
-        # Final checkpoint with updated state
+        # Final checkpoint with updated state - only written if sync completes successfully
+        # If an exception occurs, this checkpoint will not be written, and the connector
+        # will resume from the last successful periodic checkpoint on the next run
         new_state = {
             "last_updated_on": latest_updated_on,
             "last_cursor": cursor if has_next_page else None
@@ -772,7 +776,10 @@ def update(configuration: Dict[str, Any], state: Dict[str, Any]) -> None:
         log.info(f"Sync completed. Processed {orders_processed} orders")
         
     except Exception as e:
+        # Do NOT write checkpoint on failure - the last successful checkpoint will be preserved
+        # and used to resume on the next sync run
         log.severe(f"Sync failed: {str(e)}")
+        log.info("Sync failed - connector will resume from last successful checkpoint on next run")
         raise RuntimeError(f"Failed to sync data: {str(e)}")
 
 
