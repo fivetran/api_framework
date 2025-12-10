@@ -10,5 +10,7 @@
   "initial_sync_days": "",
   "enable_debug": "true/false",
   "request_timeout": "120",
-  "max_retries": "3"    
+  "max_retries": "3",
+  "from_date": "2025-01-01T00:00:00Z",
+  "to_date": ""
 }
