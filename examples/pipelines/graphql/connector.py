@@ -12,11 +12,21 @@ Key Features:
 - Automatic token refresh when 401/403 errors or GraphQL auth errors are detected
 - Cursor-based pagination for efficient data retrieval
 - Incremental sync using updatedOn timestamp filtering
+- Manual date range control via from_date/to_date configuration (overrides incremental sync)
 - Nested data flattening for complex GraphQL responses
 - Error handling and retry logic with exponential backoff for timeouts
 - Rate limiting support
 - Optional max_records_per_sync limit (empty string = sync all data)
 - Configurable request timeout and retry attempts
+
+Date Range Configuration:
+- from_date: Optional. If provided, syncs from this date (overrides incremental sync).
+            Supports ISO format (e.g., "2025-12-08T00:00:00Z") or YYYY-MM-DD (e.g., "2025-12-08").
+            When set, cursor resets and initial_sync_days is ignored.
+- to_date: Optional. If provided, syncs up to this date. If empty, syncs to current time.
+           Supports same formats as from_date.
+- initial_sync_days: Only used when from_date is empty AND no previous state exists (first sync).
+                     Defaults to 30 days lookback for initial sync.
 
 References:
 - SDK Docs: https://fivetran.com/docs/connector-sdk
@@ -650,21 +660,98 @@ def update(configuration: Dict[str, Any], state: Dict[str, Any]) -> None:
     last_updated_on = state.get("last_updated_on")
     last_cursor = state.get("last_cursor")
     
-    # Calculate date range for incremental sync
-    # If no last_updated_on, sync last 30 days by default
-    if last_updated_on:
-        min_dt = last_updated_on
-    else:
-        # Default to 30 days ago for first sync
-        default_days = int(configuration.get("initial_sync_days", "30"))
-        min_dt = (datetime.now(timezone.utc) - timedelta(days=default_days)).isoformat()
+    # Calculate date range for sync
+    # Priority order:
+    # 1) from_date/to_date from config (manual date range - overrides everything)
+    # 2) Incremental sync using state (last_updated_on from previous sync)
+    # 3) Initial sync using initial_sync_days (only for first sync when no state exists)
+    #
+    # Note: initial_sync_days is ONLY used when from_date is empty AND there's no state.
+    #       It's ignored when from_date is provided.
+    from_date_config = configuration.get("from_date", "").strip()
+    to_date_config = configuration.get("to_date", "").strip()
     
-    # Set max_dt to current time
-    max_dt = datetime.now(timezone.utc).isoformat()
+    # Track if we're using manual date range (from_date/to_date)
+    # If so, we should reset cursor to start from beginning of date range
+    using_manual_date_range = False
+    
+    if from_date_config:
+        # User has specified a from_date - use it (overrides incremental sync and initial_sync_days)
+        try:
+            # Parse the date string (supports ISO format or YYYY-MM-DD)
+            if "T" in from_date_config or " " in from_date_config:
+                # ISO format or datetime string
+                if from_date_config.endswith("Z"):
+                    from_date_config = from_date_config[:-1] + "+00:00"
+                from_dt = datetime.fromisoformat(from_date_config.replace("Z", "+00:00"))
+                if from_dt.tzinfo is None:
+                    from_dt = from_dt.replace(tzinfo=timezone.utc)
+            else:
+                # YYYY-MM-DD format - set to start of day UTC
+                from_dt = datetime.strptime(from_date_config, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            min_dt = from_dt.isoformat()
+            using_manual_date_range = True
+            log.info(f"Using from_date from configuration (manual date range mode): {min_dt}")
+            log.info("Note: initial_sync_days is ignored when from_date is provided")
+        except (ValueError, AttributeError) as e:
+            log.warning(f"Invalid from_date format '{from_date_config}', falling back to incremental sync: {e}")
+            # Fall back to incremental sync logic
+            if last_updated_on:
+                min_dt = last_updated_on
+                log.info("Falling back to incremental sync using last_updated_on from state")
+            else:
+                default_days = int(configuration.get("initial_sync_days", "30"))
+                min_dt = (datetime.now(timezone.utc) - timedelta(days=default_days)).isoformat()
+                log.info(f"Falling back to initial sync using initial_sync_days={default_days}")
+    else:
+        # No from_date in config - use incremental sync logic
+        if last_updated_on:
+            min_dt = last_updated_on
+            log.info(f"Using incremental sync from last_updated_on: {min_dt}")
+        else:
+            # First sync - use initial_sync_days to determine lookback window
+            default_days = int(configuration.get("initial_sync_days", "30"))
+            min_dt = (datetime.now(timezone.utc) - timedelta(days=default_days)).isoformat()
+            log.info(f"First sync: using initial_sync_days={default_days} to calculate start date: {min_dt}")
+    
+    # Set max_dt (to_date)
+    if to_date_config:
+        # User has specified a to_date - use it
+        try:
+            # Parse the date string (supports ISO format or YYYY-MM-DD)
+            if "T" in to_date_config or " " in to_date_config:
+                # ISO format or datetime string
+                if to_date_config.endswith("Z"):
+                    to_date_config = to_date_config[:-1] + "+00:00"
+                to_dt = datetime.fromisoformat(to_date_config.replace("Z", "+00:00"))
+                if to_dt.tzinfo is None:
+                    to_dt = to_dt.replace(tzinfo=timezone.utc)
+            else:
+                # YYYY-MM-DD format - set to end of day UTC
+                to_dt = datetime.strptime(to_date_config, "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc
+                )
+            max_dt = to_dt.isoformat()
+            log.info(f"Using to_date from configuration: {max_dt}")
+        except (ValueError, AttributeError) as e:
+            log.warning(f"Invalid to_date format '{to_date_config}', using current time: {e}")
+            max_dt = datetime.now(timezone.utc).isoformat()
+    else:
+        # No to_date in config - use current time (sync up to now)
+        max_dt = datetime.now(timezone.utc).isoformat()
+        log.info(f"to_date not specified, using current time: {max_dt}")
     
     log.info(f"Starting sync from {min_dt} to {max_dt}")
     if enable_debug:
         log.info("Debug mode enabled - responses will be dumped to debug_resp.json")
+    
+    # Initialize state tracking variables that need to persist across exceptions
+    cursor = None
+    has_next_page = True
+    orders_processed = 0
+    latest_updated_on = min_dt
+    sync_successful = False
+    sync_exception = None
     
     try:
         # Authenticate and get access token
@@ -680,10 +767,12 @@ def update(configuration: Dict[str, Any], state: Dict[str, Any]) -> None:
             return new_token
         
         # Initialize pagination variables
-        cursor = last_cursor if last_cursor else None
-        has_next_page = True
-        orders_processed = 0
-        latest_updated_on = min_dt
+        # If using manual date range, reset cursor to start from beginning
+        if using_manual_date_range:
+            cursor = None
+            log.info("Using manual date range - resetting cursor to start from beginning")
+        else:
+            cursor = last_cursor if last_cursor else None
         
         # Process all pages
         # Only check max_records_per_sync limit if it's set (not None)
@@ -735,9 +824,24 @@ def update(configuration: Dict[str, Any], state: Dict[str, Any]) -> None:
                         op.upsert(table=table_name, data=record)
                 
                 # Track latest updatedOn for state management
+                # Use proper datetime comparison for safety
                 order_updated_on = order_node.get("updatedOn")
-                if order_updated_on and order_updated_on > latest_updated_on:
-                    latest_updated_on = order_updated_on
+                if order_updated_on:
+                    try:
+                        # Parse both dates for proper comparison
+                        order_dt = datetime.fromisoformat(order_updated_on.replace("Z", "+00:00"))
+                        if order_dt.tzinfo is None:
+                            order_dt = order_dt.replace(tzinfo=timezone.utc)
+                        latest_dt = datetime.fromisoformat(latest_updated_on.replace("Z", "+00:00"))
+                        if latest_dt.tzinfo is None:
+                            latest_dt = latest_dt.replace(tzinfo=timezone.utc)
+                        
+                        if order_dt > latest_dt:
+                            latest_updated_on = order_updated_on
+                    except (ValueError, AttributeError):
+                        # Fall back to string comparison if parsing fails
+                        if order_updated_on > latest_updated_on:
+                            latest_updated_on = order_updated_on
                 
                 orders_processed += 1
                 
@@ -764,23 +868,40 @@ def update(configuration: Dict[str, Any], state: Dict[str, Any]) -> None:
                 log.warning(f"Reached max orders limit ({max_records_per_sync}), stopping sync")
                 break
         
-        # Final checkpoint with updated state - only written if sync completes successfully
-        # If an exception occurs, this checkpoint will not be written, and the connector
-        # will resume from the last successful periodic checkpoint on the next run
-        new_state = {
-            "last_updated_on": latest_updated_on,
-            "last_cursor": cursor if has_next_page else None
-        }
-        op.checkpoint(state=new_state)
-        
+        # Mark sync as successful if we reached this point
+        sync_successful = True
         log.info(f"Sync completed. Processed {orders_processed} orders")
         
     except Exception as e:
-        # Do NOT write checkpoint on failure - the last successful checkpoint will be preserved
-        # and used to resume on the next sync run
+        # Store the exception to re-raise in finally block
+        sync_exception = e
+        # Log the error - state will be handled in finally block
         log.severe(f"Sync failed: {str(e)}")
-        log.info("Sync failed - connector will resume from last successful checkpoint on next run")
-        raise RuntimeError(f"Failed to sync data: {str(e)}")
+        if orders_processed > 0:
+            log.info(f"Sync encountered error after processing {orders_processed} orders - last successful checkpoint will be preserved")
+        else:
+            log.info("Sync failed before processing any orders")
+    finally:
+        # Only write final checkpoint if sync completed successfully
+        # On failure, the last successful periodic checkpoint will be preserved and used for resume
+        if sync_successful and orders_processed > 0:
+            try:
+                new_state = {
+                    "last_updated_on": latest_updated_on,
+                    "last_cursor": cursor if has_next_page else None
+                }
+                op.checkpoint(state=new_state)
+                log.info("Final checkpoint written - sync completed successfully")
+            except Exception as checkpoint_error:
+                # If checkpoint itself fails, log but don't raise - we want the original error to propagate
+                log.severe(f"Failed to write checkpoint: {str(checkpoint_error)}")
+        elif not sync_successful and orders_processed > 0:
+            # On failure, do NOT write checkpoint - preserve last successful periodic checkpoint
+            log.info(f"Sync failed after processing {orders_processed} orders - last successful checkpoint preserved for resume")
+        
+        # Re-raise the original exception if sync failed
+        if sync_exception is not None:
+            raise RuntimeError(f"Failed to sync data: {str(sync_exception)}")
 
 
 # =============================================================================
