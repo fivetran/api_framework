@@ -660,5 +660,5 @@ if __name__ == "__main__":
 
 ## Document Version
 - **Version:** 2.0
-- **Last Updated:** 2024
+- **Last Updated:** 12.2025
 - **Purpose:** AI model system instructions for Fivetran Connector SDK development
