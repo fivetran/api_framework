@@ -49,7 +49,7 @@ mcp = FastMCP('fivetran-mcp-demo')
 # =============================================================================
 
 # Configuration file path - single source of truth for all credentials
-config_file = '/Users/elijah.davis/Documents/code/api/mcp/configuration.json'
+config_file = '/mcp/configuration.json'
 
 def _ensure_config_file_exists() -> None:
     """
