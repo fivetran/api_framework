@@ -570,6 +570,82 @@ def qualify_table_name(table_name: str, schema_name: str) -> str:
     # Qualify with schema
     return f"[{schema_name}].[{table_name}]"
 
+def has_incremental_logic(table: str, configuration: dict, conn_manager: ConnectionManager) -> bool:
+    """
+    Check if a table has incremental logic (timestamp/date columns or delete columns).
+    
+    Args:
+        table: Table name to check
+        configuration: Configuration dictionary
+        conn_manager: Connection manager instance
+        
+    Returns:
+        True if table has incremental logic, False otherwise
+    """
+    try:
+        schema_name = get_schema_name(configuration)
+        qualified_table = qualify_table_name(table, schema_name)
+        
+        # Get all columns for the table
+        with conn_manager.get_cursor() as cursor:
+            cursor.execute(configuration["schema_col_query"].format(table=table))
+            col_rows = cursor.fetchall()
+            columns = [r['COLUMN_NAME'] if isinstance(r, dict) else r[0]
+                      for r in col_rows]
+        
+        # Common timestamp/date column patterns for incremental sync
+        timestamp_patterns = [
+            '_LastUpdatedInstant',
+            '_LastUpdated',
+            'LastUpdatedInstant',
+            'LastUpdated',
+            'UpdatedAt',
+            'Updated_At',
+            'UpdateDate',
+            'Update_Date',
+            'ModifiedDate',
+            'Modified_Date',
+            'ChangeDate',
+            'Change_Date',
+            'Timestamp',
+            'TimeStamp',
+            'LastModified',
+            'Last_Modified'
+        ]
+        
+        # Check if any timestamp column exists (case-insensitive)
+        columns_lower = [col.lower() for col in columns]
+        for pattern in timestamp_patterns:
+            if pattern.lower() in columns_lower:
+                log.info(f"Table {table} has incremental logic: found timestamp column matching pattern '{pattern}'")
+                return True
+        
+        # Check for date/datetime columns that might be used for incremental sync
+        # Query column types to find date/datetime columns
+        try:
+            type_query = """
+            SELECT COLUMN_NAME, DATA_TYPE 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = '{table}' AND TABLE_SCHEMA = '{schema}'
+            AND DATA_TYPE IN ('datetime', 'datetime2', 'date', 'timestamp', 'smalldatetime')
+            """.format(table=table, schema=schema_name)
+            
+            with conn_manager.get_cursor() as cursor:
+                cursor.execute(type_query)
+                date_cols = cursor.fetchall()
+                if date_cols:
+                    log.info(f"Table {table} has incremental logic: found date/datetime columns")
+                    return True
+        except Exception as e:
+            log.warning(f"Could not check date column types for {table}: {e}")
+        
+        log.info(f"Table {table} does not have incremental logic: no timestamp/date columns found")
+        return False
+        
+    except Exception as e:
+        log.warning(f"Error checking incremental logic for table {table}: {e}. Defaulting to full load.")
+        return False
+
 def validate_configuration(configuration: dict) -> None:
     """Validate the configuration dictionary to ensure it contains all required parameters."""
     required_configs = [
@@ -916,6 +992,27 @@ def update(configuration: dict, state: dict):
         # Create connection manager with table size context for adaptive timeouts
         conn_manager = ConnectionManager(configuration, row_count)
         
+        # Check if table has incremental logic (timestamp/date columns)
+        table_has_incremental = has_incremental_logic(table, configuration, conn_manager)
+        
+        # Determine sync mode: incremental if table has timestamp/date columns, otherwise full load
+        if table_has_incremental:
+            # Initialize state for incremental sync if not present
+            if table not in state:
+                # Use a default start date for first incremental sync
+                # This ensures we capture all data from a reasonable starting point
+                default_start_date = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                state[table] = default_start_date
+                log.info(f"Table {table} has incremental logic but no state found. Using default start date: {default_start_date}")
+            else:
+                log.info(f"Table {table} has incremental logic. Using state: {state[table]}")
+        else:
+            # Table does not have incremental logic - always use full load
+            log.info(f"Table {table} does not have incremental logic. Performing full load.")
+            # Remove from state if present to ensure full load
+            if table in state:
+                del state[table]
+        
         # Retry loop for deadlock and timeout handling
         for attempt in range(max_retries):
             try:
@@ -923,15 +1020,15 @@ def update(configuration: dict, state: dict):
                     log.info(f"Processing table: {table}, start_date: {start_date}, "
                             f"state: {state}, attempt {attempt+1}/{max_retries}")
                 
-                if table in state:
-                    # Incremental sync
+                if table_has_incremental and table in state:
+                    # Incremental sync - table has timestamp/date columns
                     for operation in process_incremental_sync(table, configuration, state, conn_manager, pk_map_full):
                         yield operation
                         # Count upsert and delete operations for this table
                         if operation is not None and hasattr(operation, 'table') and operation.table == table:
                             records_processed += 1
                 else:
-                    # Full load
+                    # Full load - table does not have incremental logic or state was cleared
                     for operation in process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state):
                         yield operation
                         # Count upsert operations for this table
@@ -960,7 +1057,16 @@ def update(configuration: dict, state: dict):
                 raise
         
         # Update state and checkpoint after table completion
+        # Only store state for tables with incremental logic
+        if table_has_incremental:
         state[table] = start_date
+            log.info(f"Updated state for table {table} with incremental logic: {start_date}")
+        else:
+            # Clear state for tables without incremental logic to ensure full load on next sync
+            if table in state:
+                del state[table]
+                log.info(f"Cleared state for table {table} (no incremental logic)")
+        
         yield op.checkpoint(state)
         
         # Record count validation
