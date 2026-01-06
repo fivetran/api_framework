@@ -18,7 +18,6 @@ import time
 import random
 import threading
 from typing import Dict, List, Any, Optional, Tuple
-import pytds
 
 # Try to import psutil for resource monitoring, fallback gracefully if not available
 try:
@@ -463,6 +462,15 @@ def generate_cert_chain(server: str, port: int) -> str:
         proc.stdout,
         re.DOTALL
     )
+    # Handle case where no certificates were found (prevents "list index out of range" error)
+    if not pem_blocks:
+        log.warning(f"No certificates found from OpenSSL for {server}:{port}")
+        log.info("Using root certificate only for private link connection")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+        tmp.write(root_pem.encode('utf-8'))
+        tmp.flush()
+        tmp.close()
+        return tmp.name
     intermediate = pem_blocks[1] if len(pem_blocks) > 1 else pem_blocks[0]
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
     tmp.write((intermediate + '\n' + root_pem).encode('utf-8'))
@@ -483,36 +491,38 @@ def connect_to_mssql(configuration: dict):
 
     if cafile_cfg:
         if cafile_cfg.lstrip().startswith("-----BEGIN"):
-            import OpenSSL.SSL as SSL
-            import OpenSSL.crypto as crypto
-            # Use global pytds - don't import pytds.tls here to avoid shadowing
+            import OpenSSL.SSL as SSL, OpenSSL.crypto as crypto, pytds.tls
+            # Build a fresh X509 store and attach it to the SSL context
             ctx = SSL.Context(SSL.TLS_METHOD)
             ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
             pem_blocks = re.findall(
                 r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
                 cafile_cfg, re.DOTALL
             )
+            # Retrieve existing store and add each PEM certificate
             store = ctx.get_cert_store()
             if store is None:
                 raise RuntimeError("Failed to retrieve certificate store from SSL context")
             for pem in pem_blocks:
                 certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
                 store.add_cert(certificate)
-            # Access pytds.tls from the global import
+            # Configure pytds to use the custom SSL context
             pytds.tls.create_context = lambda cafile: ctx
             cafile = 'ignored'
         elif os.path.isfile(cafile_cfg):
             cafile = cafile_cfg
         else:
+            # Ensure cert_server and port are provided
             if not cert_server or not port:
                 raise ValueError("Cannot generate cert chain: server or port missing")
             cafile = generate_cert_chain(cert_server, int(port))
     else:
+        # No inline cert config: generate chain from server and port
         if not cert_server or not port:
             raise ValueError("Cannot generate cert chain: server or port missing")
         cafile = generate_cert_chain(cert_server, int(port))
         
-    
+    import pytds
     conn = pytds.connect(
         server=server,
         database=configuration["MSSQL_DATABASE"],
