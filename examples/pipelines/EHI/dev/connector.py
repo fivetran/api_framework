@@ -824,7 +824,7 @@ def process_full_load(table: str, configuration: dict, conn_manager: ConnectionM
         try:
             with conn_manager.get_cursor() as cursor:
                 # Use unqualified table name for INFORMATION_SCHEMA queries
-                cursor.execute(configuration["src_gen_index_column"].format(tableName=table))
+                cursor.execute(configuration["src_gen_index_column"].format(table=table))
                 r = cursor.fetchone()
                 if r:
                     if isinstance(r, dict):
