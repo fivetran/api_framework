@@ -604,6 +604,39 @@ def schema(configuration: dict) -> List[Dict[str, Any]]:
     
     return result
 
+def has_timestamp_column(table: str, column_name: str, configuration: dict, conn_manager: ConnectionManager) -> bool:
+    """Check if a table has a specific timestamp column for incremental sync.
+    
+    Args:
+        table: Table name to check
+        column_name: Column name to check for (e.g., '_LastUpdatedInstant')
+        configuration: Configuration dictionary
+        conn_manager: Connection manager instance
+        
+    Returns:
+        True if column exists, False otherwise
+    """
+    schema_name = get_schema_name(configuration)
+    
+    try:
+        with conn_manager.get_cursor() as cursor:
+            # Use unqualified table name for INFORMATION_SCHEMA query
+            check_query = f"""
+            SELECT COUNT(*) AS col_count
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table}' AND COLUMN_NAME = '{column_name}'
+            """
+            cursor.execute(check_query)
+            row = cursor.fetchone()
+            if isinstance(row, dict):
+                count = row.get('col_count') or list(row.values())[0]
+            else:
+                count = row[0]
+            return int(count) > 0
+    except Exception as e:
+        log.warning(f"Error checking for column {column_name} in table {table}: {e}")
+        return False
+
 def process_incremental_sync(table: str, configuration: dict, state: dict, 
                            conn_manager: ConnectionManager, pk_map_full: Dict[str, List[str]]) -> int:
     """Process incremental sync for a table using direct operation calls (no yield).
@@ -624,6 +657,14 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
     # Get schema name and qualify table name
     schema_name = get_schema_name(configuration)
     qualified_table = qualify_table_name(table, schema_name)
+    
+    # Check if table has the required timestamp column for incremental sync
+    timestamp_column = configuration.get("incremental_timestamp_column", "_LastUpdatedInstant")
+    if not has_timestamp_column(table, timestamp_column, configuration, conn_manager):
+        log.warning(f"Table {table} does not have column '{timestamp_column}'. "
+                   f"Skipping incremental sync - will perform full load on next run.")
+        # Return 0 to indicate no records processed, and the table will be removed from state
+        return 0
     
     # Get table size for adaptive parameters
     try:
@@ -650,8 +691,16 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
         checkpoint_interval = CHECKPOINT_INTERVAL
     
     with conn_manager.get_cursor() as cursor:
-        query = configuration["src_upsert_records"].format(
-            tableName=qualified_table, endDate=state[table], startDate=start_date
+        # Get the timestamp column name from configuration or use default
+        timestamp_column = configuration.get("incremental_timestamp_column", "_LastUpdatedInstant")
+        
+        # Build query - replace timestamp column name in the query template
+        query_template = configuration["src_upsert_records"]
+        # Replace the hardcoded _LastUpdatedInstant with the configurable column name
+        query = query_template.replace("_LastUpdatedInstant", timestamp_column).format(
+            tableName=qualified_table, 
+            endDate=state[table], 
+            startDate=start_date
         )
         log.info(f"Incremental sync for {table}: {query}")
         cursor.execute(query)
@@ -676,8 +725,13 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
         # Process deletes
         pk_cols = pk_map_full.get(table, [])
         if pk_cols:
-            del_query = configuration["src_del_records"].format(
-                tableName=qualified_table, endDate=state[table], startDate=start_date,
+            timestamp_column = configuration.get("incremental_timestamp_column", "_LastUpdatedInstant")
+            del_query_template = configuration["src_del_records"]
+            # Replace the hardcoded _LastUpdatedInstant with the configurable column name
+            del_query = del_query_template.replace("_LastUpdatedInstant", timestamp_column).format(
+                tableName=qualified_table, 
+                endDate=state[table], 
+                startDate=start_date,
                 joincol=", ".join(pk_cols)
             )
             log.info(f"Delete sync for {table}: {del_query}")
@@ -938,9 +992,45 @@ def update(configuration: dict, state: dict):
                     log.info(f"Processing table: {table}, start_date: {start_date}, "
                             f"state: {state}, attempt {attempt+1}/{max_retries}")
                 
-                if table in state:
+                # Track tables that don't support incremental sync
+                tables_without_timestamp = state.get("_tables_without_timestamp", [])
+                if isinstance(tables_without_timestamp, str):
+                    # Handle case where it's stored as a string (from JSON)
+                    import ast
+                    try:
+                        tables_without_timestamp = ast.literal_eval(tables_without_timestamp)
+                    except:
+                        tables_without_timestamp = []
+                if not isinstance(tables_without_timestamp, list):
+                    tables_without_timestamp = list(tables_without_timestamp) if tables_without_timestamp else []
+                
+                if table in state and table not in tables_without_timestamp:
                     # Incremental sync - direct call (no yield per SDK best practices)
-                    records_processed = process_incremental_sync(table, configuration, state, conn_manager, pk_map_full)
+                    try:
+                        records_processed = process_incremental_sync(table, configuration, state, conn_manager, pk_map_full)
+                        # If incremental sync returned 0, it means the table doesn't have the required column
+                        # Mark it and perform full load
+                        if records_processed == 0:
+                            log.info(f"Table {table} does not support incremental sync - marking and performing full load")
+                            if table not in tables_without_timestamp:
+                                tables_without_timestamp.append(table)
+                            state["_tables_without_timestamp"] = tables_without_timestamp
+                            state.pop(table, None)  # Remove timestamp state
+                            # Perform full load now
+                            records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state)
+                    except Exception as inc_error:
+                        # If incremental sync fails due to missing column, fall back to full load
+                        error_str = str(inc_error).lower()
+                        if "invalid column name" in error_str and ("_lastupdatedinstant" in error_str or "timestamp" in error_str):
+                            log.warning(f"Table {table} does not support incremental sync (missing timestamp column). "
+                                       f"Marking and falling back to full load. Error: {inc_error}")
+                            if table not in tables_without_timestamp:
+                                tables_without_timestamp.append(table)
+                            state["_tables_without_timestamp"] = tables_without_timestamp
+                            state.pop(table, None)  # Remove from state
+                            records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state)
+                        else:
+                            raise  # Re-raise if it's a different error
                 else:
                     # Full load - direct call (no yield per SDK best practices)
                     records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state)
@@ -967,7 +1057,17 @@ def update(configuration: dict, state: dict):
                 raise
         
         # Update state and checkpoint after table completion
-        state[table] = start_date
+        # Only add timestamp to state if table supports incremental sync
+        tables_without_timestamp = state.get("_tables_without_timestamp", [])
+        if isinstance(tables_without_timestamp, str):
+            import ast
+            try:
+                tables_without_timestamp = ast.literal_eval(tables_without_timestamp)
+            except:
+                tables_without_timestamp = []
+        
+        if table not in tables_without_timestamp:
+            state[table] = start_date
         # Direct operation call without yield - per SDK best practices
         op.checkpoint(state=state)
         
