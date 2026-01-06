@@ -483,7 +483,9 @@ def connect_to_mssql(configuration: dict):
 
     if cafile_cfg:
         if cafile_cfg.lstrip().startswith("-----BEGIN"):
-            import OpenSSL.SSL as SSL, OpenSSL.crypto as crypto, pytds.tls
+            import OpenSSL.SSL as SSL
+            import OpenSSL.crypto as crypto
+            # Use global pytds - don't import pytds.tls here to avoid shadowing
             ctx = SSL.Context(SSL.TLS_METHOD)
             ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
             pem_blocks = re.findall(
@@ -496,6 +498,7 @@ def connect_to_mssql(configuration: dict):
             for pem in pem_blocks:
                 certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
                 store.add_cert(certificate)
+            # Access pytds.tls from the global import
             pytds.tls.create_context = lambda cafile: ctx
             cafile = 'ignored'
         elif os.path.isfile(cafile_cfg):
