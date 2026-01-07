@@ -456,19 +456,20 @@ def flatten_dict(prefix: str, d: Any, result: Dict[str, Any]) -> None:
     else:
         result[prefix] = d if d is not None and d != "" else 'N/A'
 
-def generate_cert_chain(server: str, port: int, timeout: int = 30) -> str:
+def generate_cert_chain(server: str, port: int, timeout: int = 30, allow_fallback: bool = False) -> Optional[str]:
     """Generates a certificate chain file by fetching intermediate and root certificates.
     
     Args:
         server: Server hostname or IP address
         port: Server port number
         timeout: Connection timeout in seconds (default: 30)
+        allow_fallback: If True, return None instead of raising on connection errors (for private links)
         
     Returns:
-        Path to temporary certificate file
+        Path to temporary certificate file, or None if allow_fallback=True and connection fails
         
     Raises:
-        RuntimeError: If certificate generation fails
+        RuntimeError: If certificate generation fails and allow_fallback=False
     """
     log.info(f"Generating certificate chain for {server}:{port}")
     
@@ -489,20 +490,40 @@ def generate_cert_chain(server: str, port: int, timeout: int = 30) -> str:
         
         # Check for connection errors in stderr
         if 'Connection refused' in proc.stderr or 'connect:errno=111' in proc.stderr:
+            if allow_fallback:
+                log.warning(f"Connection refused to {server}:{port} for certificate generation. "
+                           f"This is expected for private link connections. Using fallback certificate.")
+                return None
             log.severe(f"Connection refused to {server}:{port}. Check network connectivity and firewall rules.")
             raise ConnectionRefusedError(f"Cannot connect to {server}:{port} - connection refused")
         
         if 'timeout' in proc.stderr.lower() or 'timed out' in proc.stderr.lower():
+            if allow_fallback:
+                log.warning(f"Connection timeout to {server}:{port} for certificate generation. "
+                           f"This is expected for private link connections. Using fallback certificate.")
+                return None
             log.severe(f"Connection timeout to {server}:{port}. Check network connectivity.")
             raise TimeoutError(f"Cannot connect to {server}:{port} - connection timeout")
             
     except subprocess.TimeoutExpired:
+        if allow_fallback:
+            log.warning(f"OpenSSL command timed out for {server}:{port}. Using fallback certificate.")
+            return None
         log.severe(f"OpenSSL command timed out after {timeout} seconds for {server}:{port}")
         raise TimeoutError(f"Certificate generation timed out for {server}:{port}")
     except FileNotFoundError:
         log.severe("OpenSSL not found. Please ensure OpenSSL is installed and in PATH.")
         raise RuntimeError("OpenSSL not found - cannot generate certificate chain")
+    except (ConnectionRefusedError, TimeoutError):
+        # Re-raise these if not allowing fallback
+        if not allow_fallback:
+            raise
+        log.warning(f"Connection error to {server}:{port} for certificate generation. Using fallback certificate.")
+        return None
     except Exception as e:
+        if allow_fallback:
+            log.warning(f"Error running OpenSSL: {e}. Using fallback certificate.")
+            return None
         log.severe(f"Error running OpenSSL: {e}")
         raise RuntimeError(f"Failed to generate certificate chain: {e}")
     
@@ -517,6 +538,29 @@ def generate_cert_chain(server: str, port: int, timeout: int = 30) -> str:
         # Use a fallback root certificate or continue without it
         root_pem = ""
     
+    # Check for DNS resolution errors in stderr and stdout
+    stderr_lower = (proc.stderr or '').lower()
+    stdout_lower = (proc.stdout or '').lower()
+    combined_output = stderr_lower + ' ' + stdout_lower
+    dns_error_patterns = [
+        'name or service not known',
+        'name resolution failed',
+        'could not resolve hostname',
+        'host not found',
+        'nodename nor servname provided',
+        'bio_lookup_ex',
+        'bio routines:bio_lookup_ex',
+        'system lib',
+        'errno=0',  # DNS errors often show errno=0
+        'could not resolve',
+        'unable to resolve'
+    ]
+    has_dns_error = any(pattern in combined_output for pattern in dns_error_patterns)
+    
+    # Log for debugging
+    if has_dns_error:
+        log.info(f"DNS error detected in OpenSSL output. stderr: {proc.stderr[:200] if proc.stderr else 'None'}")
+    
     # Extract PEM blocks from OpenSSL output
     pem_blocks = re.findall(
         r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
@@ -530,9 +574,11 @@ def generate_cert_chain(server: str, port: int, timeout: int = 30) -> str:
         log.info("OpenSSL output preview:")
         log.info(proc.stdout[:500] if proc.stdout else "No output")
         
-        # For private link connections, try using root certificate only
-        if 'privatelink' in server.lower():
-            log.info("Private link detected - using root certificate only")
+        # Check if this is a DNS resolution error - always use fallback for DNS errors
+        if has_dns_error:
+            log.warning(f"DNS resolution failed for {server}:{port}. "
+                       f"This may be expected if the certificate server is not accessible from this environment.")
+            log.info("DNS resolution error detected - attempting fallback certificate approach")
             if root_pem:
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
                 tmp.write(root_pem.encode('utf-8'))
@@ -541,6 +587,23 @@ def generate_cert_chain(server: str, port: int, timeout: int = 30) -> str:
                 log.info(f"Created certificate file: {tmp.name}")
                 return tmp.name
             else:
+                log.warning("No root certificate available - will attempt connection without certificate validation")
+                return None
+        
+        # For private link connections or when allow_fallback is True, try using root certificate only
+        if 'privatelink' in server.lower() or allow_fallback:
+            log.info("Private link detected or fallback allowed - using root certificate only")
+            if root_pem:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                tmp.write(root_pem.encode('utf-8'))
+                tmp.flush()
+                tmp.close()
+                log.info(f"Created certificate file: {tmp.name}")
+                return tmp.name
+            else:
+                if allow_fallback:
+                    log.warning("No root certificate available - will attempt connection without certificate validation")
+                    return None
                 log.warning("No root certificate available - connection may fail")
                 # Create empty cert file as fallback
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
@@ -684,34 +747,123 @@ def connect_to_mssql(configuration: dict):
             if not cert_server:
                 raise ValueError(f"Cannot generate cert chain: {cert_key} not provided and {server_key} cannot be used")
             log.info(f"Generating certificate chain for {cert_server}:{cert_port}")
+            # For private links or when cert server differs from SQL server, allow fallback if certificate generation fails
+            is_privatelink = 'privatelink' in (cert_server or server or '').lower()
+            cert_server_different = cert_server and cert_server != server
+            # Allow fallback for private links or when cert server is different (may not be accessible)
+            allow_cert_fallback = is_privatelink or cert_server_different
             try:
-                cafile = generate_cert_chain(cert_server, cert_port)
+                cafile = generate_cert_chain(cert_server, cert_port, allow_fallback=allow_cert_fallback)
+                if cafile is None and allow_cert_fallback:
+                    log.info("Certificate generation failed - will use root certificate or proceed without validation")
+                    # Try to get root certificate as fallback
+                    try:
+                        root_pem = requests.get(
+                            'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+                            timeout=10
+                        ).text
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                        tmp.write(root_pem.encode('utf-8'))
+                        tmp.flush()
+                        tmp.close()
+                        cafile = tmp.name
+                        log.info(f"Using root certificate fallback: {cafile}")
+                    except Exception as root_err:
+                        log.warning(f"Could not fetch root certificate: {root_err}. Will attempt connection without certificate validation.")
+                        cafile = None
             except (ConnectionRefusedError, TimeoutError) as e:
-                log.severe(f"Certificate generation failed: {e}")
-                raise
+                if allow_cert_fallback:
+                    log.warning(f"Certificate generation failed: {e}. Using fallback approach.")
+                    # Try root certificate fallback
+                    try:
+                        root_pem = requests.get(
+                            'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+                            timeout=10
+                        ).text
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                        tmp.write(root_pem.encode('utf-8'))
+                        tmp.flush()
+                        tmp.close()
+                        cafile = tmp.name
+                        log.info(f"Using root certificate fallback: {cafile}")
+                    except Exception as root_err:
+                        log.warning(f"Could not fetch root certificate: {root_err}. Will attempt connection without certificate validation.")
+                        cafile = None
+                else:
+                    log.severe(f"Certificate generation failed: {e}")
+                    raise
             except Exception as e:
-                log.severe(f"Unexpected error during certificate generation: {e}")
-                raise RuntimeError(f"Certificate generation failed: {e}")
+                if allow_cert_fallback:
+                    log.warning(f"Certificate generation error: {e}. Using fallback approach.")
+                    cafile = None
+                else:
+                    log.severe(f"Unexpected error during certificate generation: {e}")
+                    raise RuntimeError(f"Certificate generation failed: {e}")
     else:
         # No inline cert config: generate chain from server and port
         if not cert_server:
             raise ValueError(f"Cannot generate cert chain: {cert_key} not provided")
         log.info(f"Generating certificate chain for {cert_server}:{cert_port}")
+        # For private links or when cert server differs from SQL server, allow fallback if certificate generation fails
+        is_privatelink = 'privatelink' in (cert_server or server or '').lower()
+        cert_server_different = cert_server and cert_server != server
+        # Allow fallback for private links or when cert server is different (may not be accessible)
+        allow_cert_fallback = is_privatelink or cert_server_different
         try:
-            cafile = generate_cert_chain(cert_server, cert_port)
+            cafile = generate_cert_chain(cert_server, cert_port, allow_fallback=allow_cert_fallback)
+            if cafile is None and allow_cert_fallback:
+                log.info("Certificate generation failed - will use root certificate or proceed without validation")
+                # Try to get root certificate as fallback
+                try:
+                    root_pem = requests.get(
+                        'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+                        timeout=10
+                    ).text
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                    tmp.write(root_pem.encode('utf-8'))
+                    tmp.flush()
+                    tmp.close()
+                    cafile = tmp.name
+                    log.info(f"Using root certificate fallback: {cafile}")
+                except Exception as root_err:
+                    log.warning(f"Could not fetch root certificate: {root_err}. Will attempt connection without certificate validation.")
+                    cafile = None
         except (ConnectionRefusedError, TimeoutError) as e:
-            log.severe(f"Certificate generation failed: {e}")
-            log.severe("Troubleshooting steps:")
-            log.severe(f"  1. Verify {server_key} and {port_key} are correct")
-            if cert_port != port:
-                log.severe(f"  2. Verify {cert_port_key} ({cert_port}) is correct and different from SQL port ({port})")
-            log.severe(f"  3. Check network connectivity to {cert_server}:{cert_port}")
-            log.severe(f"  4. Verify firewall rules allow connections to {cert_server}:{cert_port}")
-            log.severe(f"  5. For private links, ensure the endpoint is accessible from this environment")
-            raise
+            if allow_cert_fallback:
+                log.warning(f"Certificate generation failed: {e}. Using fallback approach.")
+                # Try root certificate fallback
+                try:
+                    root_pem = requests.get(
+                        'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+                        timeout=10
+                    ).text
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                    tmp.write(root_pem.encode('utf-8'))
+                    tmp.flush()
+                    tmp.close()
+                    cafile = tmp.name
+                    log.info(f"Using root certificate fallback: {cafile}")
+                except Exception as root_err:
+                    log.warning(f"Could not fetch root certificate: {root_err}. Will attempt connection without certificate validation.")
+                    cafile = None
+            else:
+                log.severe(f"Certificate generation failed: {e}")
+                log.severe("Troubleshooting steps:")
+                log.severe(f"  1. Verify {server_key} and {port_key} are correct")
+                if cert_port != port:
+                    log.severe(f"  2. Verify {cert_port_key} ({cert_port}) is correct and different from SQL port ({port})")
+                log.severe(f"  3. Check network connectivity to {cert_server}:{cert_port}")
+                log.severe(f"  4. Verify firewall rules allow connections to {cert_server}:{cert_port}")
+                log.severe(f"  5. For private links, ensure the endpoint is accessible from this environment")
+                log.severe(f"  6. Check DNS resolution: nslookup {cert_server}")
+                raise
         except Exception as e:
-            log.severe(f"Unexpected error during certificate generation: {e}")
-            raise RuntimeError(f"Certificate generation failed: {e}")
+            if allow_cert_fallback:
+                log.warning(f"Certificate generation error: {e}. Using fallback approach.")
+                cafile = None
+            else:
+                log.severe(f"Unexpected error during certificate generation: {e}")
+                raise RuntimeError(f"Certificate generation failed: {e}")
     
     # Attempt connection with retry logic
     import pytds
@@ -720,16 +872,28 @@ def connect_to_mssql(configuration: dict):
     log.info(f"Attempting connection with timeout: {connection_timeout}s")
     
     try:
-        conn = pytds.connect(
-            server=server,
-            database=database,
-            user=user,
-            password=password,
-            port=port,
-            cafile=cafile if cafile != 'ignored' else None,
-            validate_host=False,
-            timeout=connection_timeout
-        )
+        # Prepare connection parameters
+        conn_params = {
+            'server': server,
+            'database': database,
+            'user': user,
+            'password': password,
+            'port': port,
+            'validate_host': False,
+            'timeout': connection_timeout
+        }
+        
+        # Handle certificate file
+        if cafile and cafile != 'ignored':
+            conn_params['cafile'] = cafile
+            log.info(f"Using certificate file: {cafile}")
+        elif cafile is None:
+            # No certificate - connection will proceed without certificate validation
+            log.warning("No certificate file available - connection will proceed without certificate validation")
+            # pytds will handle this - we just don't pass cafile
+        # else: cafile == 'ignored' means using custom SSL context (already configured)
+        
+        conn = pytds.connect(**conn_params)
         log.info("Successfully connected to MSSQL database")
         return conn
     except ConnectionRefusedError as e:
