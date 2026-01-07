@@ -301,14 +301,24 @@ class ConnectionManager:
     def _create_connection(self):
         """Create a new database connection."""
         try:
+            log.info(f"Creating new database connection (table size: {self.table_size:,} rows)")
             conn = connect_to_mssql(self.configuration)
             self.current_connection = conn
             self.current_cursor = conn.cursor()
             self.connection_start_time = datetime.utcnow()
             log.info(f"New database connection established at {self.connection_start_time}")
             return conn, self.current_cursor
+        except (ConnectionRefusedError, TimeoutError) as e:
+            log.severe(f"Failed to create database connection: {e}")
+            log.severe("This is a network connectivity issue. Please check:")
+            log.severe("  1. Server address and port are correct")
+            log.severe("  2. Network connectivity to the server")
+            log.severe("  3. Firewall/security group rules")
+            log.severe("  4. For private links, DNS resolution and endpoint accessibility")
+            raise
         except Exception as e:
             log.severe(f"Failed to create database connection: {e}")
+            log.severe(f"Error type: {type(e).__name__}")
             raise
     
     def _close_connection(self):
@@ -446,93 +456,294 @@ def flatten_dict(prefix: str, d: Any, result: Dict[str, Any]) -> None:
     else:
         result[prefix] = d if d is not None and d != "" else 'N/A'
 
-def generate_cert_chain(server: str, port: int) -> str:
-    """Generates a certificate chain file by fetching intermediate and root certificates."""
-    proc = subprocess.run(
-        ['openssl', 's_client', '-showcerts', '-connect', f'{server}:{port}'],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    root_pem = requests.get(
-        'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem'
-    ).text
+def generate_cert_chain(server: str, port: int, timeout: int = 30) -> str:
+    """Generates a certificate chain file by fetching intermediate and root certificates.
+    
+    Args:
+        server: Server hostname or IP address
+        port: Server port number
+        timeout: Connection timeout in seconds (default: 30)
+        
+    Returns:
+        Path to temporary certificate file
+        
+    Raises:
+        RuntimeError: If certificate generation fails
+    """
+    log.info(f"Generating certificate chain for {server}:{port}")
+    
+    # Try to fetch certificates with timeout
+    try:
+        proc = subprocess.run(
+            ['openssl', 's_client', '-showcerts', '-connect', f'{server}:{port}', 
+             '-servername', server, '-verify_return_error'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout
+        )
+        
+        # Log OpenSSL output for debugging
+        if proc.stderr:
+            log.info(f"OpenSSL stderr: {proc.stderr[:500]}")  # First 500 chars
+        
+        # Check for connection errors in stderr
+        if 'Connection refused' in proc.stderr or 'connect:errno=111' in proc.stderr:
+            log.severe(f"Connection refused to {server}:{port}. Check network connectivity and firewall rules.")
+            raise ConnectionRefusedError(f"Cannot connect to {server}:{port} - connection refused")
+        
+        if 'timeout' in proc.stderr.lower() or 'timed out' in proc.stderr.lower():
+            log.severe(f"Connection timeout to {server}:{port}. Check network connectivity.")
+            raise TimeoutError(f"Cannot connect to {server}:{port} - connection timeout")
+            
+    except subprocess.TimeoutExpired:
+        log.severe(f"OpenSSL command timed out after {timeout} seconds for {server}:{port}")
+        raise TimeoutError(f"Certificate generation timed out for {server}:{port}")
+    except FileNotFoundError:
+        log.severe("OpenSSL not found. Please ensure OpenSSL is installed and in PATH.")
+        raise RuntimeError("OpenSSL not found - cannot generate certificate chain")
+    except Exception as e:
+        log.severe(f"Error running OpenSSL: {e}")
+        raise RuntimeError(f"Failed to generate certificate chain: {e}")
+    
+    # Fetch root certificate
+    try:
+        root_pem = requests.get(
+            'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+            timeout=10
+        ).text
+    except Exception as e:
+        log.warning(f"Failed to fetch root certificate from DigiCert: {e}")
+        # Use a fallback root certificate or continue without it
+        root_pem = ""
+    
+    # Extract PEM blocks from OpenSSL output
     pem_blocks = re.findall(
         r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
         proc.stdout,
         re.DOTALL
     )
-    # Handle case where no certificates were found (prevents "list index out of range" error)
+    
+    # Handle case where no certificates were found
     if not pem_blocks:
         log.warning(f"No certificates found from OpenSSL for {server}:{port}")
-        log.info("Using root certificate only for private link connection")
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
-        tmp.write(root_pem.encode('utf-8'))
-        tmp.flush()
-        tmp.close()
-        return tmp.name
+        log.info("OpenSSL output preview:")
+        log.info(proc.stdout[:500] if proc.stdout else "No output")
+        
+        # For private link connections, try using root certificate only
+        if 'privatelink' in server.lower():
+            log.info("Private link detected - using root certificate only")
+            if root_pem:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                tmp.write(root_pem.encode('utf-8'))
+                tmp.flush()
+                tmp.close()
+                log.info(f"Created certificate file: {tmp.name}")
+                return tmp.name
+            else:
+                log.warning("No root certificate available - connection may fail")
+                # Create empty cert file as fallback
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                tmp.write(b'')
+                tmp.flush()
+                tmp.close()
+                return tmp.name
+        else:
+            raise RuntimeError(f"No certificates found from OpenSSL for {server}:{port}. "
+                             f"OpenSSL stderr: {proc.stderr[:200]}")
+    
+    # Combine intermediate and root certificates
     intermediate = pem_blocks[1] if len(pem_blocks) > 1 else pem_blocks[0]
+    cert_chain = intermediate
+    if root_pem:
+        cert_chain = intermediate + '\n' + root_pem
+    
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
-    tmp.write((intermediate + '\n' + root_pem).encode('utf-8'))
+    tmp.write(cert_chain.encode('utf-8'))
     tmp.flush()
     tmp.close()
+    log.info(f"Successfully created certificate chain file: {tmp.name} ({len(cert_chain)} bytes)")
     return tmp.name
 
 def connect_to_mssql(configuration: dict):
-    """Connects to MSSQL using TDS with SSL cert chain."""
+    """Connects to MSSQL using TDS with SSL cert chain.
+    
+    Args:
+        configuration: Configuration dictionary with connection parameters
+        
+    Returns:
+        pytds connection object
+        
+    Raises:
+        ValueError: If required configuration parameters are missing
+        ConnectionRefusedError: If connection is refused
+        TimeoutError: If connection times out
+        RuntimeError: For other connection errors
+    """
     is_local = platform.system() == "Darwin"
     server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
     cert_key = "MSSQL_CERT_SERVER_DIR" if is_local else "MSSQL_CERT_SERVER"
     port_key = "MSSQL_PORT_DIR" if is_local else "MSSQL_PORT"
+    
+    # Get connection parameters
     server = configuration.get(server_key)
-    cert_server = configuration.get(cert_key)
-    port = configuration.get(port_key)
+    cert_server = configuration.get(cert_key) or server  # Fallback to server if cert_server not provided
+    port_str = configuration.get(port_key)
+    
+    # Validate required parameters
+    if not server:
+        raise ValueError(f"Missing required configuration: {server_key}. "
+                       f"Please provide the MSSQL server address.")
+    
+    if not port_str:
+        raise ValueError(f"Missing required configuration: {port_key}. "
+                       f"Please provide the MSSQL port number.")
+    
+    try:
+        port = int(port_str)
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid port value: {port_str}. Port must be a number.")
+    
+    # Validate database, user, and password
+    database = configuration.get("MSSQL_DATABASE")
+    user = configuration.get("MSSQL_USER")
+    password = configuration.get("MSSQL_PASSWORD")
+    
+    if not database:
+        raise ValueError("Missing required configuration: MSSQL_DATABASE")
+    if not user:
+        raise ValueError("Missing required configuration: MSSQL_USER")
+    if not password:
+        raise ValueError("Missing required configuration: MSSQL_PASSWORD")
+    
+    # Log connection attempt (without sensitive data)
+    log.info(f"Connecting to MSSQL server: {server}:{port}")
+    log.info(f"Database: {database}, User: {user}")
+    if 'privatelink' in server.lower():
+        log.info("Private link connection detected")
+    
+    # Handle certificate configuration
     cafile_cfg = configuration.get("cdw_cert", None)
+    cafile = None
 
     if cafile_cfg:
         if cafile_cfg.lstrip().startswith("-----BEGIN"):
-            import OpenSSL.SSL as SSL, OpenSSL.crypto as crypto, pytds.tls
-            # Build a fresh X509 store and attach it to the SSL context
-            ctx = SSL.Context(SSL.TLS_METHOD)
-            ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
-            pem_blocks = re.findall(
-                r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
-                cafile_cfg, re.DOTALL
-            )
-            # Retrieve existing store and add each PEM certificate
-            store = ctx.get_cert_store()
-            if store is None:
-                raise RuntimeError("Failed to retrieve certificate store from SSL context")
-            for pem in pem_blocks:
-                certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
-                store.add_cert(certificate)
-            # Configure pytds to use the custom SSL context
-            pytds.tls.create_context = lambda cafile: ctx
-            cafile = 'ignored'
+            log.info("Using inline certificate from configuration")
+            try:
+                import OpenSSL.SSL as SSL, OpenSSL.crypto as crypto, pytds.tls
+                # Build a fresh X509 store and attach it to the SSL context
+                ctx = SSL.Context(SSL.TLS_METHOD)
+                ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
+                pem_blocks = re.findall(
+                    r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
+                    cafile_cfg, re.DOTALL
+                )
+                if not pem_blocks:
+                    raise ValueError("No valid certificates found in cdw_cert configuration")
+                
+                # Retrieve existing store and add each PEM certificate
+                store = ctx.get_cert_store()
+                if store is None:
+                    raise RuntimeError("Failed to retrieve certificate store from SSL context")
+                for pem in pem_blocks:
+                    certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
+                    store.add_cert(certificate)
+                # Configure pytds to use the custom SSL context
+                pytds.tls.create_context = lambda cafile: ctx
+                cafile = 'ignored'
+                log.info(f"Loaded {len(pem_blocks)} certificate(s) from inline configuration")
+            except ImportError:
+                log.severe("OpenSSL Python bindings not available. Install pyopenssl package.")
+                raise RuntimeError("OpenSSL Python bindings required for inline certificate support")
+            except Exception as e:
+                log.severe(f"Failed to process inline certificate: {e}")
+                raise RuntimeError(f"Invalid certificate configuration: {e}")
         elif os.path.isfile(cafile_cfg):
+            log.info(f"Using certificate file: {cafile_cfg}")
             cafile = cafile_cfg
         else:
-            # Ensure cert_server and port are provided
-            if not cert_server or not port:
-                raise ValueError("Cannot generate cert chain: server or port missing")
-            cafile = generate_cert_chain(cert_server, int(port))
+            # Generate certificate chain
+            if not cert_server:
+                raise ValueError(f"Cannot generate cert chain: {cert_key} not provided and {server_key} cannot be used")
+            log.info(f"Generating certificate chain for {cert_server}:{port}")
+            try:
+                cafile = generate_cert_chain(cert_server, port)
+            except (ConnectionRefusedError, TimeoutError) as e:
+                log.severe(f"Certificate generation failed: {e}")
+                raise
+            except Exception as e:
+                log.severe(f"Unexpected error during certificate generation: {e}")
+                raise RuntimeError(f"Certificate generation failed: {e}")
     else:
         # No inline cert config: generate chain from server and port
-        if not cert_server or not port:
-            raise ValueError("Cannot generate cert chain: server or port missing")
-        cafile = generate_cert_chain(cert_server, int(port))
-        
+        if not cert_server:
+            raise ValueError(f"Cannot generate cert chain: {cert_key} not provided")
+        log.info(f"Generating certificate chain for {cert_server}:{port}")
+        try:
+            cafile = generate_cert_chain(cert_server, port)
+        except (ConnectionRefusedError, TimeoutError) as e:
+            log.severe(f"Certificate generation failed: {e}")
+            log.severe("Troubleshooting steps:")
+            log.severe(f"  1. Verify {server_key} and {port_key} are correct")
+            log.severe(f"  2. Check network connectivity to {server}:{port}")
+            log.severe(f"  3. Verify firewall rules allow connections to {server}:{port}")
+            log.severe(f"  4. For private links, ensure the endpoint is accessible from this environment")
+            raise
+        except Exception as e:
+            log.severe(f"Unexpected error during certificate generation: {e}")
+            raise RuntimeError(f"Certificate generation failed: {e}")
+    
+    # Attempt connection with retry logic
     import pytds
-    conn = pytds.connect(
-        server=server,
-        database=configuration["MSSQL_DATABASE"],
-        user=configuration["MSSQL_USER"],
-        password=configuration["MSSQL_PASSWORD"],
-        port=port,
-        cafile=cafile,
-        validate_host=False
-    )
-    return conn
+    connection_timeout = int(configuration.get("connection_timeout", 30))
+    
+    log.info(f"Attempting connection with timeout: {connection_timeout}s")
+    
+    try:
+        conn = pytds.connect(
+            server=server,
+            database=database,
+            user=user,
+            password=password,
+            port=port,
+            cafile=cafile if cafile != 'ignored' else None,
+            validate_host=False,
+            timeout=connection_timeout
+        )
+        log.info("Successfully connected to MSSQL database")
+        return conn
+    except ConnectionRefusedError as e:
+        log.severe(f"Connection refused to {server}:{port}")
+        log.severe("Troubleshooting steps:")
+        log.severe(f"  1. Verify {server_key} = '{server}' is correct")
+        log.severe(f"  2. Verify {port_key} = '{port}' is correct")
+        log.severe(f"  3. Check network connectivity: Can you reach {server}:{port}?")
+        log.severe(f"  4. Verify firewall/security group rules allow connections")
+        log.severe(f"  5. For private links, ensure DNS resolution works: nslookup {server}")
+        log.severe(f"  6. Check if SQL Server is running and listening on port {port}")
+        raise
+    except TimeoutError as e:
+        log.severe(f"Connection timeout to {server}:{port} after {connection_timeout}s")
+        log.severe("Troubleshooting steps:")
+        log.severe(f"  1. Check network latency to {server}")
+        log.severe(f"  2. Verify firewall rules allow connections")
+        log.severe(f"  3. Increase connection_timeout in configuration if needed")
+        raise
+    except Exception as e:
+        error_str = str(e).lower()
+        if 'connection refused' in error_str or 'errno 111' in error_str:
+            log.severe(f"Connection refused to {server}:{port}")
+            log.severe("Troubleshooting steps:")
+            log.severe(f"  1. Verify server and port are correct")
+            log.severe(f"  2. Check network connectivity")
+            log.severe(f"  3. Verify firewall rules")
+            raise ConnectionRefusedError(f"Cannot connect to {server}:{port}: {e}")
+        elif 'timeout' in error_str:
+            log.severe(f"Connection timeout to {server}:{port}")
+            raise TimeoutError(f"Connection timeout to {server}:{port}: {e}")
+        else:
+            log.severe(f"Connection error: {e}")
+            raise RuntimeError(f"Failed to connect to MSSQL: {e}")
 
 def get_schema_name(configuration: dict) -> str:
     """Extract schema name from configuration or default to 'epic'."""
@@ -574,22 +785,121 @@ def validate_configuration(configuration: dict) -> None:
     for key in required_configs:
         if key not in configuration:
             raise ValueError(f"Missing required configuration value: {key}")
+    
+    # Validate connection parameters
+    is_local = platform.system() == "Darwin"
+    server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
+    port_key = "MSSQL_PORT_DIR" if is_local else "MSSQL_PORT"
+    
+    server = configuration.get(server_key)
+    port = configuration.get(port_key)
+    
+    if not server:
+        raise ValueError(f"Missing required configuration: {server_key}")
+    if not port:
+        raise ValueError(f"Missing required configuration: {port_key}")
+    
+    try:
+        port_int = int(port)
+        if port_int < 1 or port_int > 65535:
+            raise ValueError(f"Invalid port number: {port_int}. Port must be between 1 and 65535")
+    except (ValueError, TypeError):
+        raise ValueError(f"Invalid port value: {port}. Port must be a number")
+
+def validate_connection_parameters(configuration: dict) -> Dict[str, Any]:
+    """Validate and return connection parameters with helpful error messages.
+    
+    Returns:
+        Dictionary with validated connection parameters
+    """
+    is_local = platform.system() == "Darwin"
+    server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
+    cert_key = "MSSQL_CERT_SERVER_DIR" if is_local else "MSSQL_CERT_SERVER"
+    port_key = "MSSQL_PORT_DIR" if is_local else "MSSQL_PORT"
+    
+    server = configuration.get(server_key)
+    cert_server = configuration.get(cert_key) or server
+    port_str = configuration.get(port_key)
+    
+    errors = []
+    if not server:
+        errors.append(f"Missing {server_key}")
+    if not port_str:
+        errors.append(f"Missing {port_key}")
+    else:
+        try:
+            port = int(port_str)
+            if port < 1 or port > 65535:
+                errors.append(f"Invalid port: {port} (must be 1-65535)")
+        except (ValueError, TypeError):
+            errors.append(f"Invalid port value: {port_str} (must be a number)")
+    
+    if errors:
+        error_msg = "Connection parameter validation failed:\n  " + "\n  ".join(errors)
+        if 'privatelink' in (server or '').lower():
+            error_msg += "\n\nFor private link connections, ensure:"
+            error_msg += "\n  1. The private link endpoint is correctly configured"
+            error_msg += "\n  2. DNS resolution works for the private link hostname"
+            error_msg += "\n  3. Network connectivity is available to the private link endpoint"
+        raise ValueError(error_msg)
+    
+    return {
+        'server': server,
+        'cert_server': cert_server,
+        'port': int(port_str),
+        'database': configuration.get("MSSQL_DATABASE"),
+        'user': configuration.get("MSSQL_USER"),
+        'is_privatelink': 'privatelink' in server.lower() if server else False
+    }
 
 def schema(configuration: dict) -> List[Dict[str, Any]]:
     """Discover tables, columns, and primary keys."""
     validate_configuration(configuration)
     
+    # Validate connection parameters early with helpful error messages
+    try:
+        conn_params = validate_connection_parameters(configuration)
+        log.info(f"Connection parameters validated: server={conn_params['server']}, "
+                f"port={conn_params['port']}, database={conn_params['database']}")
+        if conn_params['is_privatelink']:
+            log.info("Private link connection detected")
+    except ValueError as e:
+        log.severe(f"Configuration validation failed: {e}")
+        raise
+    
     raw_debug = configuration.get("debug", False)
     debug = (isinstance(raw_debug, str) and raw_debug.lower() == 'true')
     log.info(f"Debug mode: {debug}")
     
-    conn_manager = ConnectionManager(configuration)
+    try:
+        conn_manager = ConnectionManager(configuration)
+    except (ConnectionRefusedError, TimeoutError) as e:
+        log.severe(f"Failed to establish connection during schema discovery: {e}")
+        log.severe("Please verify your connection parameters and network connectivity")
+        raise
+    except Exception as e:
+        log.severe(f"Unexpected error creating connection manager: {e}")
+        raise
     
-    with conn_manager.get_cursor() as cursor:
-        query = configuration["schema_table_list_query_debug"] if debug else configuration["schema_table_list_query"]
-        cursor.execute(query)
-        tables = [r['TABLE_NAME'] if isinstance(r, dict) else r[0]
-                  for r in cursor.fetchall()]
+    try:
+        with conn_manager.get_cursor() as cursor:
+            query = configuration["schema_table_list_query_debug"] if debug else configuration["schema_table_list_query"]
+            log.info(f"Executing schema discovery query: {query[:200]}...")
+            cursor.execute(query)
+            tables = [r['TABLE_NAME'] if isinstance(r, dict) else r[0]
+                      for r in cursor.fetchall()]
+            log.info(f"Found {len(tables)} table(s) to process")
+    except (ConnectionRefusedError, TimeoutError) as e:
+        log.severe(f"Connection error during schema discovery: {e}")
+        log.severe("Troubleshooting steps:")
+        log.severe("  1. Verify server address and port are correct")
+        log.severe("  2. Check network connectivity")
+        log.severe("  3. Verify firewall/security group rules")
+        log.severe("  4. For private links, ensure DNS resolution works")
+        raise
+    except Exception as e:
+        log.severe(f"Error executing schema discovery query: {e}")
+        raise
     
     result = []
     for table in tables:
@@ -615,6 +925,7 @@ def schema(configuration: dict) -> List[Dict[str, Any]]:
             log.warning(f"Error processing schema for table {table}: {e}")
             continue
     
+    log.info(f"Schema discovery completed: {len(result)} table(s) processed")
     return result
 
 def has_timestamp_column(table: str, column_name: str, configuration: dict, conn_manager: ConnectionManager) -> bool:
