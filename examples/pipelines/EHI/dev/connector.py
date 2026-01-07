@@ -17,6 +17,7 @@ import queue
 import time
 import random
 import threading
+import socket
 from typing import Dict, List, Any, Optional, Tuple
 
 # Try to import psutil for resource monitoring, fallback gracefully if not available
@@ -628,6 +629,28 @@ def generate_cert_chain(server: str, port: int, timeout: int = 30, allow_fallbac
     log.info(f"Successfully created certificate chain file: {tmp.name} ({len(cert_chain)} bytes)")
     return tmp.name
 
+def verify_dns_resolution(hostname: str, timeout: int = 10) -> bool:
+    """Verify DNS resolution for a hostname, especially important for private links.
+    
+    Args:
+        hostname: Hostname to resolve
+        timeout: DNS resolution timeout in seconds (not used directly but kept for API consistency)
+        
+    Returns:
+        True if DNS resolution succeeds, False otherwise
+    """
+    try:
+        log.info(f"Verifying DNS resolution for {hostname}...")
+        socket.gethostbyname(hostname)
+        log.info(f"DNS resolution successful for {hostname}")
+        return True
+    except socket.gaierror as e:
+        log.warning(f"DNS resolution failed for {hostname}: {e}")
+        return False
+    except Exception as e:
+        log.warning(f"Error during DNS resolution for {hostname}: {e}")
+        return False
+
 def connect_to_mssql(configuration: dict):
     """Connects to MSSQL using TDS with SSL cert chain.
     
@@ -668,6 +691,17 @@ def connect_to_mssql(configuration: dict):
         port = int(port_str)
     except (ValueError, TypeError):
         raise ValueError(f"Invalid port value: {port_str}. Port must be a number.")
+    
+    # Check if this is a private link connection
+    is_privatelink = 'privatelink' in server.lower()
+    
+    # For private links, verify DNS resolution first
+    if is_privatelink:
+        log.info("Private link detected - verifying DNS resolution before connection attempt")
+        if not verify_dns_resolution(server):
+            log.warning(f"DNS resolution warning for private link {server}, but proceeding with connection attempt")
+        else:
+            log.info(f"DNS resolution confirmed for private link {server}")
     
     # Get certificate port (falls back to regular port if not specified)
     if cert_port_str:
@@ -867,67 +901,142 @@ def connect_to_mssql(configuration: dict):
     
     # Attempt connection with retry logic
     import pytds
-    connection_timeout = int(configuration.get("connection_timeout", 30))
+    # For private links, use longer default timeout
+    default_timeout = 60 if is_privatelink else 30
+    connection_timeout = int(configuration.get("connection_timeout", default_timeout))
     
-    log.info(f"Attempting connection with timeout: {connection_timeout}s")
+    # For private links, use more retries with exponential backoff
+    max_connection_retries = int(configuration.get("connection_retries", 3 if is_privatelink else 1))
+    base_retry_delay = 2  # Start with 2 seconds
     
-    try:
-        # Prepare connection parameters
-        conn_params = {
-            'server': server,
-            'database': database,
-            'user': user,
-            'password': password,
-            'port': port,
-            'validate_host': False,
-            'timeout': connection_timeout
-        }
-        
-        # Handle certificate file
-        if cafile and cafile != 'ignored':
-            conn_params['cafile'] = cafile
-            log.info(f"Using certificate file: {cafile}")
-        elif cafile is None:
-            # No certificate - connection will proceed without certificate validation
-            log.warning("No certificate file available - connection will proceed without certificate validation")
-            # pytds will handle this - we just don't pass cafile
-        # else: cafile == 'ignored' means using custom SSL context (already configured)
-        
-        conn = pytds.connect(**conn_params)
-        log.info("Successfully connected to MSSQL database")
-        return conn
-    except ConnectionRefusedError as e:
-        log.severe(f"Connection refused to {server}:{port}")
-        log.severe("Troubleshooting steps:")
-        log.severe(f"  1. Verify {server_key} = '{server}' is correct")
-        log.severe(f"  2. Verify {port_key} = '{port}' is correct")
-        log.severe(f"  3. Check network connectivity: Can you reach {server}:{port}?")
-        log.severe(f"  4. Verify firewall/security group rules allow connections")
-        log.severe(f"  5. For private links, ensure DNS resolution works: nslookup {server}")
-        log.severe(f"  6. Check if SQL Server is running and listening on port {port}")
-        raise
-    except TimeoutError as e:
-        log.severe(f"Connection timeout to {server}:{port} after {connection_timeout}s")
-        log.severe("Troubleshooting steps:")
-        log.severe(f"  1. Check network latency to {server}")
-        log.severe(f"  2. Verify firewall rules allow connections")
-        log.severe(f"  3. Increase connection_timeout in configuration if needed")
-        raise
-    except Exception as e:
-        error_str = str(e).lower()
+    log.info(f"Attempting connection with timeout: {connection_timeout}s, max retries: {max_connection_retries}")
+    if is_privatelink:
+        log.info("Private link connection - using extended timeout and retry logic")
+    
+    # Prepare connection parameters
+    conn_params = {
+        'server': server,
+        'database': database,
+        'user': user,
+        'password': password,
+        'port': port,
+        'validate_host': False,
+        'timeout': connection_timeout
+    }
+    
+    # Handle certificate file
+    if cafile and cafile != 'ignored':
+        conn_params['cafile'] = cafile
+        log.info(f"Using certificate file: {cafile}")
+    elif cafile is None:
+        # No certificate - connection will proceed without certificate validation
+        log.warning("No certificate file available - connection will proceed without certificate validation")
+        # pytds will handle this - we just don't pass cafile
+    # else: cafile == 'ignored' means using custom SSL context (already configured)
+    
+    # Retry loop for connection attempts
+    last_error = None
+    for attempt in range(max_connection_retries):
+        try:
+            if attempt > 0:
+                # Exponential backoff with jitter
+                delay = base_retry_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                log.info(f"Connection attempt {attempt + 1}/{max_connection_retries} after {delay:.2f}s delay")
+                time.sleep(delay)
+            
+            log.info(f"Connection attempt {attempt + 1}/{max_connection_retries} to {server}:{port}")
+            conn = pytds.connect(**conn_params)
+            log.info("Successfully connected to MSSQL database")
+            return conn
+        except ConnectionRefusedError as e:
+            last_error = e
+            log.warning(f"Connection refused on attempt {attempt + 1}/{max_connection_retries}: {e}")
+            if attempt + 1 >= max_connection_retries:
+                # Final attempt failed
+                break
+            # Continue to retry
+            continue
+        except TimeoutError as e:
+            last_error = e
+            log.warning(f"Connection timeout on attempt {attempt + 1}/{max_connection_retries}: {e}")
+            if attempt + 1 >= max_connection_retries:
+                # Final attempt failed
+                break
+            # Continue to retry
+            continue
+        except OSError as e:
+            last_error = e
+            error_str = str(e).lower()
+            # Check if it's a connection-related OSError
+            if 'connection refused' in error_str or 'errno 111' in error_str:
+                log.warning(f"Connection refused (OSError) on attempt {attempt + 1}/{max_connection_retries}: {e}")
+                if attempt + 1 >= max_connection_retries:
+                    # Final attempt failed
+                    break
+                # Continue to retry
+                continue
+            elif 'timeout' in error_str:
+                log.warning(f"Connection timeout (OSError) on attempt {attempt + 1}/{max_connection_retries}: {e}")
+                if attempt + 1 >= max_connection_retries:
+                    # Final attempt failed
+                    break
+                # Continue to retry
+                continue
+            else:
+                # Other OSError - might be network related, retry
+                log.warning(f"Network error (OSError) on attempt {attempt + 1}/{max_connection_retries}: {e}")
+                if attempt + 1 >= max_connection_retries:
+                    # Final attempt failed
+                    break
+                # Continue to retry
+                continue
+        except Exception as e:
+            # Non-retryable error
+            last_error = e
+            log.severe(f"Non-retryable connection error: {e}")
+            raise
+    
+    # All retries exhausted - provide detailed error messages
+    if last_error:
+        error_str = str(last_error).lower()
         if 'connection refused' in error_str or 'errno 111' in error_str:
-            log.severe(f"Connection refused to {server}:{port}")
+            log.severe(f"Connection refused to {server}:{port} after {max_connection_retries} attempts")
             log.severe("Troubleshooting steps:")
-            log.severe(f"  1. Verify server and port are correct")
-            log.severe(f"  2. Check network connectivity")
-            log.severe(f"  3. Verify firewall rules")
-            raise ConnectionRefusedError(f"Cannot connect to {server}:{port}: {e}")
+            log.severe(f"  1. Verify {server_key} = '{server}' is correct")
+            log.severe(f"  2. Verify {port_key} = '{port}' is correct")
+            log.severe(f"  3. Check network connectivity: Can you reach {server}:{port}?")
+            log.severe(f"  4. Verify firewall/security group rules allow connections")
+            if is_privatelink:
+                log.severe(f"  5. For private links, verify:")
+                log.severe(f"     - DNS resolution works: nslookup {server}")
+                log.severe(f"     - Private link endpoint is accessible from this environment")
+                log.severe(f"     - VPC peering/routing is configured correctly")
+                log.severe(f"     - Security groups allow traffic from this source")
+            else:
+                log.severe(f"  5. Check if SQL Server is running and listening on port {port}")
+            raise ConnectionRefusedError(f"Connection refused to {server}:{port} after {max_connection_retries} attempts: {last_error}")
         elif 'timeout' in error_str:
-            log.severe(f"Connection timeout to {server}:{port}")
-            raise TimeoutError(f"Connection timeout to {server}:{port}: {e}")
+            log.severe(f"Connection timeout to {server}:{port} after {max_connection_retries} attempts (timeout: {connection_timeout}s)")
+            log.severe("Troubleshooting steps:")
+            log.severe(f"  1. Check network latency to {server}")
+            log.severe(f"  2. Verify firewall rules allow connections")
+            if is_privatelink:
+                log.severe(f"  3. For private links, verify network routing and VPC configuration")
+                log.severe(f"  4. Consider increasing connection_timeout in configuration (current: {connection_timeout}s)")
+            else:
+                log.severe(f"  3. Increase connection_timeout in configuration if needed (current: {connection_timeout}s)")
+            raise TimeoutError(f"Connection timeout to {server}:{port} after {max_connection_retries} attempts: {last_error}")
         else:
-            log.severe(f"Connection error: {e}")
-            raise RuntimeError(f"Failed to connect to MSSQL: {e}")
+            log.severe(f"Connection error to {server}:{port} after {max_connection_retries} attempts: {last_error}")
+            if is_privatelink:
+                log.severe("For private links, verify:")
+                log.severe(f"  - DNS resolution: nslookup {server}")
+                log.severe(f"  - Network connectivity and routing")
+                log.severe(f"  - VPC peering configuration")
+            raise RuntimeError(f"Failed to connect to {server}:{port} after {max_connection_retries} attempts: {last_error}")
+    
+    # Should not reach here, but just in case
+    raise RuntimeError(f"Failed to connect to {server}:{port} - unknown error")
 
 def get_schema_name(configuration: dict) -> str:
     """Extract schema name from configuration or default to 'epic'."""
