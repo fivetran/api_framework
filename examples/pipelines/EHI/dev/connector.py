@@ -584,11 +584,13 @@ def connect_to_mssql(configuration: dict):
     server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
     cert_key = "MSSQL_CERT_SERVER_DIR" if is_local else "MSSQL_CERT_SERVER"
     port_key = "MSSQL_PORT_DIR" if is_local else "MSSQL_PORT"
+    cert_port_key = "MSSQL_CERT_PORT_DIR" if is_local else "MSSQL_CERT_PORT"
     
     # Get connection parameters
     server = configuration.get(server_key)
     cert_server = configuration.get(cert_key) or server  # Fallback to server if cert_server not provided
     port_str = configuration.get(port_key)
+    cert_port_str = configuration.get(cert_port_key)  # Optional - falls back to port if not provided
     
     # Validate required parameters
     if not server:
@@ -603,6 +605,20 @@ def connect_to_mssql(configuration: dict):
         port = int(port_str)
     except (ValueError, TypeError):
         raise ValueError(f"Invalid port value: {port_str}. Port must be a number.")
+    
+    # Get certificate port (falls back to regular port if not specified)
+    if cert_port_str:
+        try:
+            cert_port = int(cert_port_str)
+            if cert_port < 1 or cert_port > 65535:
+                raise ValueError(f"Invalid cert port: {cert_port} (must be 1-65535)")
+            log.info(f"Using separate certificate port: {cert_port} (SQL port: {port})")
+        except (ValueError, TypeError):
+            log.warning(f"Invalid cert_port value: {cert_port_str}. Falling back to SQL port: {port}")
+            cert_port = port
+    else:
+        cert_port = port
+        log.info(f"Using SQL port for certificate generation: {port}")
     
     # Validate database, user, and password
     database = configuration.get("MSSQL_DATABASE")
@@ -619,6 +635,8 @@ def connect_to_mssql(configuration: dict):
     # Log connection attempt (without sensitive data)
     log.info(f"Connecting to MSSQL server: {server}:{port}")
     log.info(f"Database: {database}, User: {user}")
+    if cert_port != port:
+        log.info(f"Certificate will be fetched from: {cert_server}:{cert_port}")
     if 'privatelink' in server.lower():
         log.info("Private link connection detected")
     
@@ -665,9 +683,9 @@ def connect_to_mssql(configuration: dict):
             # Generate certificate chain
             if not cert_server:
                 raise ValueError(f"Cannot generate cert chain: {cert_key} not provided and {server_key} cannot be used")
-            log.info(f"Generating certificate chain for {cert_server}:{port}")
+            log.info(f"Generating certificate chain for {cert_server}:{cert_port}")
             try:
-                cafile = generate_cert_chain(cert_server, port)
+                cafile = generate_cert_chain(cert_server, cert_port)
             except (ConnectionRefusedError, TimeoutError) as e:
                 log.severe(f"Certificate generation failed: {e}")
                 raise
@@ -678,16 +696,18 @@ def connect_to_mssql(configuration: dict):
         # No inline cert config: generate chain from server and port
         if not cert_server:
             raise ValueError(f"Cannot generate cert chain: {cert_key} not provided")
-        log.info(f"Generating certificate chain for {cert_server}:{port}")
+        log.info(f"Generating certificate chain for {cert_server}:{cert_port}")
         try:
-            cafile = generate_cert_chain(cert_server, port)
+            cafile = generate_cert_chain(cert_server, cert_port)
         except (ConnectionRefusedError, TimeoutError) as e:
             log.severe(f"Certificate generation failed: {e}")
             log.severe("Troubleshooting steps:")
             log.severe(f"  1. Verify {server_key} and {port_key} are correct")
-            log.severe(f"  2. Check network connectivity to {server}:{port}")
-            log.severe(f"  3. Verify firewall rules allow connections to {server}:{port}")
-            log.severe(f"  4. For private links, ensure the endpoint is accessible from this environment")
+            if cert_port != port:
+                log.severe(f"  2. Verify {cert_port_key} ({cert_port}) is correct and different from SQL port ({port})")
+            log.severe(f"  3. Check network connectivity to {cert_server}:{cert_port}")
+            log.severe(f"  4. Verify firewall rules allow connections to {cert_server}:{cert_port}")
+            log.severe(f"  5. For private links, ensure the endpoint is accessible from this environment")
             raise
         except Exception as e:
             log.severe(f"Unexpected error during certificate generation: {e}")
@@ -816,10 +836,12 @@ def validate_connection_parameters(configuration: dict) -> Dict[str, Any]:
     server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
     cert_key = "MSSQL_CERT_SERVER_DIR" if is_local else "MSSQL_CERT_SERVER"
     port_key = "MSSQL_PORT_DIR" if is_local else "MSSQL_PORT"
+    cert_port_key = "MSSQL_CERT_PORT_DIR" if is_local else "MSSQL_CERT_PORT"
     
     server = configuration.get(server_key)
     cert_server = configuration.get(cert_key) or server
     port_str = configuration.get(port_key)
+    cert_port_str = configuration.get(cert_port_key)
     
     errors = []
     if not server:
@@ -834,6 +856,16 @@ def validate_connection_parameters(configuration: dict) -> Dict[str, Any]:
         except (ValueError, TypeError):
             errors.append(f"Invalid port value: {port_str} (must be a number)")
     
+    # Validate cert_port if provided
+    cert_port = None
+    if cert_port_str:
+        try:
+            cert_port = int(cert_port_str)
+            if cert_port < 1 or cert_port > 65535:
+                errors.append(f"Invalid cert_port: {cert_port} (must be 1-65535)")
+        except (ValueError, TypeError):
+            errors.append(f"Invalid cert_port value: {cert_port_str} (must be a number)")
+    
     if errors:
         error_msg = "Connection parameter validation failed:\n  " + "\n  ".join(errors)
         if 'privatelink' in (server or '').lower():
@@ -843,10 +875,14 @@ def validate_connection_parameters(configuration: dict) -> Dict[str, Any]:
             error_msg += "\n  3. Network connectivity is available to the private link endpoint"
         raise ValueError(error_msg)
     
+    # Use cert_port if provided, otherwise fall back to port
+    final_cert_port = cert_port if cert_port is not None else int(port_str)
+    
     return {
         'server': server,
         'cert_server': cert_server,
         'port': int(port_str),
+        'cert_port': final_cert_port,
         'database': configuration.get("MSSQL_DATABASE"),
         'user': configuration.get("MSSQL_USER"),
         'is_privatelink': 'privatelink' in server.lower() if server else False
