@@ -746,17 +746,22 @@ def connect_to_mssql(configuration: dict):
     # Log connection attempt (without sensitive data)
     log.info(f"Connecting to MSSQL server: {server}:{port}")
     log.info(f"Database: {database}, User: {user}")
-    if cert_port != port or cert_server != server:
-        log.info(f"Certificate will be fetched from certificate server: {cert_server}:{cert_port} (SQL server: {server}:{port})")
-    else:
-        log.info(f"Certificate will be fetched from: {cert_server}:{cert_port}")
     if 'privatelink' in server.lower():
         log.info("Private link connection detected")
     
     # Handle certificate configuration
-    # PRIORITY: If cdw_cert is provided, use it and do NOT generate certificates
+    # PRIORITY: If cdw_cert is provided, use it for authentication and do NOT generate certificates
     cafile_cfg = configuration.get("cdw_cert", None)
     cafile = None
+    
+    # Log certificate source
+    if cafile_cfg:
+        log.info("cdw_cert found in configuration - will use provided certificate for MSSQL authentication")
+    else:
+        if cert_port != port or cert_server != server:
+            log.info(f"Certificate will be fetched from certificate server: {cert_server}:{cert_port} (SQL server: {server}:{port})")
+        else:
+            log.info(f"Certificate will be fetched from: {cert_server}:{cert_port}")
 
     if cafile_cfg:
         # cdw_cert is provided - use it exclusively, do not generate certificates
@@ -919,15 +924,28 @@ def connect_to_mssql(configuration: dict):
         'timeout': connection_timeout
     }
     
-    # Handle certificate file
+    # Handle certificate file for authentication
     if cafile and cafile != 'ignored':
+        # Using certificate file from cdw_cert or generated certificate
         conn_params['cafile'] = cafile
-        log.info(f"Using certificate file: {cafile}")
+        if cafile_cfg:
+            log.info(f"Using cdw_cert certificate file for MSSQL authentication: {cafile}")
+            log.info(f"Connecting to {server}:{port} with certificate-based authentication")
+        else:
+            log.info(f"Using generated certificate file: {cafile}")
+    elif cafile == 'ignored':
+        # Using custom SSL context from inline cdw_cert (already configured via pytds.tls.create_context)
+        if cafile_cfg:
+            log.info(f"Using inline cdw_cert certificate for MSSQL authentication")
+            log.info(f"Connecting to {server}:{port} with certificate-based authentication")
+        # No need to set cafile - custom SSL context is already configured
     elif cafile is None:
         # No certificate - connection will proceed without certificate validation
-        log.warning("No certificate file available - connection will proceed without certificate validation")
+        if cafile_cfg:
+            log.warning("cdw_cert was provided but could not be processed - connection will proceed without certificate validation")
+        else:
+            log.warning("No certificate file available - connection will proceed without certificate validation")
         # pytds will handle this - we just don't pass cafile
-    # else: cafile == 'ignored' means using custom SSL context (already configured)
     
     # Retry loop for connection attempts
     last_error = None
