@@ -154,6 +154,16 @@ def connect_to_sql_server(configuration: dict):
     if cafile_cfg:
         log.info("cdw_cert found in configuration - using provided certificate")
         
+        # Decode JSON-escaped sequences (e.g., \\n -> \n, \\t -> \t, etc.)
+        # This handles certificates stored in JSON config files where newlines are escaped
+        # When certificates are stored in JSON, newlines are often escaped as \\n
+        # We need to convert these to actual newlines for PEM parsing to work
+        original_length = len(cafile_cfg)
+        # Replace escaped sequences (looking for literal backslash-n, not actual newline)
+        cafile_cfg = cafile_cfg.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\r')
+        if len(cafile_cfg) != original_length:
+            log.info("Decoded JSON escape sequences in certificate (\\n -> newline, \\t -> tab, \\r -> carriage return)")
+        
         if cafile_cfg.lstrip().startswith("-----BEGIN"):
             # Inline certificate (PEM format)
             log.info("Using inline certificate from cdw_cert configuration")
@@ -165,12 +175,23 @@ def connect_to_sql_server(configuration: dict):
                 ctx = SSL.Context(SSL.TLS_METHOD)
                 ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
                 
+                # Look for both certificates and certificate chains
+                # Support multiple PEM block types: CERTIFICATE, RSA PRIVATE KEY, etc.
                 pem_blocks = re.findall(
-                    r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
+                    r'-----BEGIN (?:CERTIFICATE|RSA PRIVATE KEY|PRIVATE KEY|PUBLIC KEY)-----.+?-----END (?:CERTIFICATE|RSA PRIVATE KEY|PRIVATE KEY|PUBLIC KEY)-----',
                     cafile_cfg, re.DOTALL
                 )
                 
+                # If no blocks found with the broader pattern, try just certificates
                 if not pem_blocks:
+                    pem_blocks = re.findall(
+                        r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
+                        cafile_cfg, re.DOTALL
+                    )
+                
+                if not pem_blocks:
+                    # Log the first 200 chars for debugging
+                    log.warning(f"No PEM blocks found. Certificate starts with: {cafile_cfg[:200]}")
                     raise ValueError("No valid certificates found in cdw_cert configuration")
                 
                 # Retrieve existing store and add each PEM certificate
@@ -178,17 +199,27 @@ def connect_to_sql_server(configuration: dict):
                 if store is None:
                     raise RuntimeError("Failed to retrieve certificate store from SSL context")
                 
+                certificates_loaded = 0
                 for pem in pem_blocks:
-                    certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
-                    store.add_cert(certificate)
+                    # Only process certificates, skip private keys
+                    if '-----BEGIN CERTIFICATE-----' in pem:
+                        certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
+                        store.add_cert(certificate)
+                        certificates_loaded += 1
+                    else:
+                        log.info(f"Skipping non-certificate PEM block (likely a private key)")
+                
+                if certificates_loaded == 0:
+                    raise ValueError("No certificates found in cdw_cert configuration (only private keys or other PEM blocks)")
                 
                 # Configure pytds to use the custom SSL context
                 pytds.tls.create_context = lambda cafile: ctx
                 cafile = 'ignored'
-                log.info(f"Loaded {len(pem_blocks)} certificate(s) from inline cdw_cert configuration")
+                log.info(f"Loaded {certificates_loaded} certificate(s) from inline cdw_cert configuration")
                 
             except Exception as e:
                 log.severe(f"Failed to process inline certificate from cdw_cert: {e}")
+                log.severe(f"Certificate preview (first 300 chars): {cafile_cfg[:300]}")
                 raise RuntimeError(f"Invalid cdw_cert configuration: {e}")
                 
         elif os.path.isfile(cafile_cfg):
