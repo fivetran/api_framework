@@ -754,12 +754,17 @@ def connect_to_mssql(configuration: dict):
         log.info("Private link connection detected")
     
     # Handle certificate configuration
+    # PRIORITY: If cdw_cert is provided, use it and do NOT generate certificates
     cafile_cfg = configuration.get("cdw_cert", None)
     cafile = None
 
     if cafile_cfg:
+        # cdw_cert is provided - use it exclusively, do not generate certificates
+        log.info("cdw_cert configuration found - using provided certificate and skipping certificate generation")
+        
         if cafile_cfg.lstrip().startswith("-----BEGIN"):
-            log.info("Using inline certificate from configuration")
+            # Inline certificate (PEM format)
+            log.info("Using inline certificate from cdw_cert configuration")
             try:
                 import OpenSSL.SSL as SSL, OpenSSL.crypto as crypto, pytds.tls
                 # Build a fresh X509 store and attach it to the SSL context
@@ -782,81 +787,48 @@ def connect_to_mssql(configuration: dict):
                 # Configure pytds to use the custom SSL context
                 pytds.tls.create_context = lambda cafile: ctx
                 cafile = 'ignored'
-                log.info(f"Loaded {len(pem_blocks)} certificate(s) from inline configuration")
+                log.info(f"Loaded {len(pem_blocks)} certificate(s) from inline cdw_cert configuration")
             except ImportError:
                 log.severe("OpenSSL Python bindings not available. Install pyopenssl package.")
                 raise RuntimeError("OpenSSL Python bindings required for inline certificate support")
             except Exception as e:
-                log.severe(f"Failed to process inline certificate: {e}")
-                raise RuntimeError(f"Invalid certificate configuration: {e}")
+                log.severe(f"Failed to process inline certificate from cdw_cert: {e}")
+                raise RuntimeError(f"Invalid cdw_cert configuration: {e}")
         elif os.path.isfile(cafile_cfg):
-            log.info(f"Using certificate file: {cafile_cfg}")
+            # Certificate file path
+            log.info(f"Using certificate file from cdw_cert: {cafile_cfg}")
             cafile = cafile_cfg
         else:
-            # Generate certificate chain
-            if not cert_server:
-                raise ValueError(f"Cannot generate cert chain: {cert_key} not provided and {server_key} cannot be used")
-            log.info(f"Generating certificate chain for {cert_server}:{cert_port} (SQL server: {server}:{port})")
-            if is_privatelink and cert_port == port:
-                log.warning(f"WARNING: For private links, certificate port should typically be different from SQL port. "
-                           f"Using {cert_port} for certificate generation. If this fails, ensure {cert_port_key} is set correctly.")
-            # For private links or when cert server differs from SQL server, allow fallback if certificate generation fails
-            is_privatelink_cert = 'privatelink' in (cert_server or server or '').lower()
-            cert_server_different = cert_server and cert_server != server
-            # Allow fallback for private links or when cert server is different (may not be accessible)
-            allow_cert_fallback = is_privatelink_cert or cert_server_different
+            # cdw_cert is provided but doesn't match expected formats
+            # Try to treat it as a certificate string that might work
+            log.warning(f"cdw_cert provided but doesn't appear to be a file path or inline PEM certificate.")
+            log.warning(f"Value appears to be: {cafile_cfg[:100]}... (first 100 chars)")
+            log.warning("Attempting to use cdw_cert as-is. If connection fails, verify the certificate format.")
+            
+            # Try to create a temp file with the content
             try:
-                cafile = generate_cert_chain(cert_server, cert_port, allow_fallback=allow_cert_fallback)
-                if cafile is None and allow_cert_fallback:
-                    log.info("Certificate generation failed - will use root certificate or proceed without validation")
-                    # Try to get root certificate as fallback
-                    try:
-                        root_pem = requests.get(
-                            'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
-                            timeout=10
-                        ).text
-                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
-                        tmp.write(root_pem.encode('utf-8'))
-                        tmp.flush()
-                        tmp.close()
-                        cafile = tmp.name
-                        log.info(f"Using root certificate fallback: {cafile}")
-                    except Exception as root_err:
-                        log.warning(f"Could not fetch root certificate: {root_err}. Will attempt connection without certificate validation.")
-                        cafile = None
-            except (ConnectionRefusedError, TimeoutError) as e:
-                if allow_cert_fallback:
-                    log.warning(f"Certificate generation failed: {e}. Using fallback approach.")
-                    # Try root certificate fallback
-                    try:
-                        root_pem = requests.get(
-                            'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
-                            timeout=10
-                        ).text
-                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
-                        tmp.write(root_pem.encode('utf-8'))
-                        tmp.flush()
-                        tmp.close()
-                        cafile = tmp.name
-                        log.info(f"Using root certificate fallback: {cafile}")
-                    except Exception as root_err:
-                        log.warning(f"Could not fetch root certificate: {root_err}. Will attempt connection without certificate validation.")
-                        cafile = None
-                else:
-                    log.severe(f"Certificate generation failed: {e}")
-                    raise
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem', mode='w')
+                tmp.write(cafile_cfg)
+                tmp.flush()
+                tmp.close()
+                cafile = tmp.name
+                log.info(f"Created temporary certificate file from cdw_cert: {cafile}")
             except Exception as e:
-                if allow_cert_fallback:
-                    log.warning(f"Certificate generation error: {e}. Using fallback approach.")
-                    cafile = None
-                else:
-                    log.severe(f"Unexpected error during certificate generation: {e}")
-                    raise RuntimeError(f"Certificate generation failed: {e}")
+                log.severe(f"Failed to process cdw_cert value: {e}")
+                raise RuntimeError(f"Invalid cdw_cert configuration - could not process as file or inline cert: {e}")
+        
+        # IMPORTANT: When cdw_cert is provided, we do NOT generate certificates
+        # This is especially important for private links where certificate generation may fail
+        log.info("cdw_cert is configured - skipping certificate generation (this is expected for private links)")
     else:
-        # No inline cert config: generate chain from server and port
+        # No cdw_cert provided: generate chain from server and port
+        if is_privatelink:
+            log.warning("Private link detected but cdw_cert not provided. Certificate generation may fail for private links.")
+            log.warning("For private links, it is recommended to provide cdw_cert in configuration to avoid certificate generation issues.")
+        
         if not cert_server:
             raise ValueError(f"Cannot generate cert chain: {cert_key} not provided")
-        log.info(f"Generating certificate chain for {cert_server}:{cert_port} (SQL server: {server}:{port})")
+        log.info(f"cdw_cert not provided - generating certificate chain for {cert_server}:{cert_port} (SQL server: {server}:{port})")
         if is_privatelink and cert_port == port:
             log.warning(f"WARNING: For private links, certificate port should typically be different from SQL port. "
                        f"Using {cert_port} for certificate generation. If this fails, ensure {cert_port_key} is set correctly.")
