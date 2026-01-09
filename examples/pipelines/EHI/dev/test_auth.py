@@ -1,38 +1,44 @@
+#!/usr/bin/env python3
 """
-SQL Server Authentication Test Connector
+Simple authentication test script for SQL Server using private link and certificate-based authentication.
 
-This connector demonstrates how to test authentication to SQL Server using:
-- Private link endpoint connectivity
+This script tests the connection to a SQL Server instance using:
+- Private link endpoint
 - Certificate-based authentication (cdw_cert)
 - Standard SQL Server authentication (username/password)
 
-The connector performs a simple authentication test and records the results in a test table.
+Usage:
+    python test_auth.py
 
-See the Technical Reference documentation:
-https://fivetran.com/docs/connectors/connector-sdk/technical-reference#update
-
-And the Best Practices documentation:
-https://fivetran.com/docs/connectors/connector-sdk/best-practices
+Configuration:
+    Update the configuration dictionary below with your credentials and certificate.
 """
 
-# Required imports
-from fivetran_connector_sdk import Connector, Logging as log, Operations as op
-import json
 import os
+import json
 import re
 import tempfile
 import platform
 import socket
 import time
 import random
-from datetime import datetime
-from typing import Dict, Any, Optional
+import subprocess
+from typing import Optional
 
-# Source-specific imports
+# Import requests for fetching root certificates
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    print("WARNING: requests not available. Certificate generation may be limited.")
+
+# Import required libraries
 try:
     import pytds
 except ImportError:
-    raise ImportError("pytds not installed. Install with: pip install pytds")
+    print("ERROR: pytds not installed. Install with: pip install pytds")
+    exit(1)
 
 try:
     import OpenSSL.SSL as SSL
@@ -40,71 +46,363 @@ try:
     OPENSSL_AVAILABLE = True
 except ImportError:
     OPENSSL_AVAILABLE = False
-    log.warning("pyopenssl not available. Inline certificate support may be limited.")
+    print("WARNING: pyopenssl not available. Inline certificate support may be limited.")
 
 
-def validate_configuration(configuration: dict):
-    """
-    Validate the configuration dictionary to ensure it contains all required parameters.
+def generate_cert_chain(server: str, port: int, timeout: int = 30, allow_fallback: bool = False) -> Optional[str]:
+    """Generates a certificate chain file by fetching intermediate and root certificates.
+    
+    This function mirrors the logic from connector.py to test certificate generation.
     
     Args:
-        configuration: Dictionary holding configuration settings for the connector.
+        server: Server hostname or IP address
+        port: Server port number
+        timeout: Connection timeout in seconds (default: 30)
+        allow_fallback: If True, return None instead of raising on connection errors (for private links)
+        
+    Returns:
+        Path to temporary certificate file, or None if allow_fallback=True and connection fails
         
     Raises:
-        ValueError: If any required configuration parameter is missing.
+        RuntimeError: If certificate generation fails and allow_fallback=False
     """
+    print(f"\nGenerating certificate chain for {server}:{port}")
+    
+    # Try to fetch certificates with timeout
+    try:
+        proc = subprocess.run(
+            ['openssl', 's_client', '-showcerts', '-connect', f'{server}:{port}', 
+             '-servername', server, '-verify_return_error'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout
+        )
+        
+        # Log OpenSSL output for debugging
+        if proc.stderr:
+            print(f"OpenSSL stderr: {proc.stderr[:500]}")  # First 500 chars
+        
+        # Check for connection errors in stderr
+        if 'Connection refused' in proc.stderr or 'connect:errno=111' in proc.stderr:
+            if allow_fallback:
+                print(f"⚠ Connection refused to {server}:{port} for certificate generation. "
+                      f"This is expected for private link connections. Using fallback certificate.")
+                return None
+            print(f"✗ Connection refused to {server}:{port}. Check network connectivity and firewall rules.")
+            raise ConnectionRefusedError(f"Cannot connect to {server}:{port} - connection refused")
+        
+        if 'timeout' in proc.stderr.lower() or 'timed out' in proc.stderr.lower():
+            if allow_fallback:
+                print(f"⚠ Connection timeout to {server}:{port} for certificate generation. "
+                      f"This is expected for private link connections. Using fallback certificate.")
+                return None
+            print(f"✗ Connection timeout to {server}:{port}. Check network connectivity.")
+            raise TimeoutError(f"Cannot connect to {server}:{port} - connection timeout")
+            
+    except subprocess.TimeoutExpired:
+        if allow_fallback:
+            print(f"⚠ OpenSSL command timed out for {server}:{port}. Using fallback certificate.")
+            return None
+        print(f"✗ OpenSSL command timed out after {timeout} seconds for {server}:{port}")
+        raise TimeoutError(f"Certificate generation timed out for {server}:{port}")
+    except FileNotFoundError:
+        print("✗ OpenSSL not found. Please ensure OpenSSL is installed and in PATH.")
+        raise RuntimeError("OpenSSL not found - cannot generate certificate chain")
+    except (ConnectionRefusedError, TimeoutError):
+        # Re-raise these if not allowing fallback
+        if not allow_fallback:
+            raise
+        print(f"⚠ Connection error to {server}:{port} for certificate generation. Using fallback certificate.")
+        return None
+    except Exception as e:
+        if allow_fallback:
+            print(f"⚠ Error running OpenSSL: {e}. Using fallback certificate.")
+            return None
+        print(f"✗ Error running OpenSSL: {e}")
+        raise RuntimeError(f"Failed to generate certificate chain: {e}")
+    
+    # Fetch root certificate
+    root_pem = ""
+    if REQUESTS_AVAILABLE:
+        try:
+            print("Fetching root certificate from DigiCert...")
+            root_pem = requests.get(
+                'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+                timeout=10
+            ).text
+            print("✓ Root certificate fetched successfully")
+        except Exception as e:
+            print(f"⚠ Failed to fetch root certificate from DigiCert: {e}")
+            # Use a fallback root certificate or continue without it
+            root_pem = ""
+    else:
+        print("⚠ requests library not available - skipping root certificate fetch")
+    
+    # Check for DNS resolution errors in stderr and stdout
+    stderr_lower = (proc.stderr or '').lower()
+    stdout_lower = (proc.stdout or '').lower()
+    combined_output = stderr_lower + ' ' + stdout_lower
+    dns_error_patterns = [
+        'name or service not known',
+        'name resolution failed',
+        'could not resolve hostname',
+        'host not found',
+        'nodename nor servname provided',
+        'bio_lookup_ex',
+        'bio routines:bio_lookup_ex',
+        'system lib',
+        'errno=0',  # DNS errors often show errno=0
+        'could not resolve',
+        'unable to resolve'
+    ]
+    has_dns_error = any(pattern in combined_output for pattern in dns_error_patterns)
+    
+    # Log for debugging
+    if has_dns_error:
+        print(f"⚠ DNS error detected in OpenSSL output. stderr: {proc.stderr[:200] if proc.stderr else 'None'}")
+    
+    # Extract PEM blocks from OpenSSL output
+    pem_blocks = re.findall(
+        r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
+        proc.stdout,
+        re.DOTALL
+    )
+    
+    # Handle case where no certificates were found
+    if not pem_blocks:
+        print(f"⚠ No certificates found from OpenSSL for {server}:{port}")
+        print("OpenSSL output preview:")
+        print(proc.stdout[:500] if proc.stdout else "No output")
+        
+        # Check if this is a DNS resolution error - always use fallback for DNS errors
+        if has_dns_error:
+            print(f"⚠ DNS resolution failed for {server}:{port}. "
+                  f"This may be expected if the certificate server is not accessible from this environment.")
+            print("DNS resolution error detected - attempting fallback certificate approach")
+            if root_pem:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                tmp.write(root_pem.encode('utf-8'))
+                tmp.flush()
+                tmp.close()
+                print(f"✓ Created certificate file: {tmp.name}")
+                return tmp.name
+            else:
+                print("⚠ No root certificate available - will attempt connection without certificate validation")
+                return None
+        
+        # For private link connections or when allow_fallback is True, try using root certificate only
+        if 'privatelink' in server.lower() or allow_fallback:
+            print("Private link detected or fallback allowed - using root certificate only")
+            if root_pem:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                tmp.write(root_pem.encode('utf-8'))
+                tmp.flush()
+                tmp.close()
+                print(f"✓ Created certificate file: {tmp.name}")
+                return tmp.name
+            else:
+                if allow_fallback:
+                    print("⚠ No root certificate available - will attempt connection without certificate validation")
+                    return None
+                print("⚠ No root certificate available - connection may fail")
+                # Create empty cert file as fallback
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                tmp.write(b'')
+                tmp.flush()
+                tmp.close()
+                return tmp.name
+        else:
+            raise RuntimeError(f"No certificates found from OpenSSL for {server}:{port}. "
+                             f"OpenSSL stderr: {proc.stderr[:200]}")
+    
+    # Combine intermediate and root certificates
+    intermediate = pem_blocks[1] if len(pem_blocks) > 1 else pem_blocks[0]
+    cert_chain = intermediate
+    if root_pem:
+        cert_chain = intermediate + '\n' + root_pem
+    
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+    tmp.write(cert_chain.encode('utf-8'))
+    tmp.flush()
+    tmp.close()
+    print(f"✓ Successfully created certificate chain file: {tmp.name} ({len(cert_chain)} bytes)")
+    return tmp.name
+
+
+def test_cert_generation(configuration: dict) -> bool:
+    """Test certificate generation using the generate_cert_chain function.
+    
+    Args:
+        configuration: Dictionary containing connection parameters
+        
+    Returns:
+        True if certificate generation test passed, False otherwise
+    """
+    print("\n" + "=" * 80)
+    print("CERTIFICATE GENERATION TEST")
+    print("=" * 80)
+    
     # Determine platform-specific keys
     is_local = platform.system() == "Darwin"
     server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
     port_key = "MSSQL_PORT_DIR" if is_local else "MSSQL_PORT"
     
-    required_configs = [
-        server_key, port_key, "MSSQL_DATABASE", "MSSQL_USER", "MSSQL_PASSWORD"
-    ]
+    # Get connection parameters
+    server = configuration.get(server_key)
+    port_str = configuration.get(port_key)
     
-    for key in required_configs:
-        if key not in configuration:
-            raise ValueError(f"Missing required configuration value: {key}")
+    # Validate required parameters
+    if not server:
+        print(f"✗ ERROR: Missing required configuration: {server_key}")
+        return False
+    
+    if not port_str:
+        print(f"✗ ERROR: Missing required configuration: {port_key}")
+        return False
+    
+    try:
+        port = int(port_str)
+    except (ValueError, TypeError):
+        print(f"✗ ERROR: Invalid port value: {port_str}. Port must be a number.")
+        return False
+    
+    # Check if this is a private link connection
+    is_privatelink = 'privatelink' in server.lower()
+    
+    print(f"\nCertificate Generation Details:")
+    print(f"  Server: {server}")
+    print(f"  Port: {port}")
+    print(f"  Private Link: {'Yes' if is_privatelink else 'No'}")
+    
+    # Get timeout from configuration
+    timeout = int(configuration.get("cert_generation_timeout", 30))
+    allow_fallback = is_privatelink  # Allow fallback for private links
+    
+    print(f"  Timeout: {timeout}s")
+    print(f"  Allow Fallback: {'Yes' if allow_fallback else 'No'}")
+    
+    cert_file = None
+    try:
+        # Attempt to generate certificate chain
+        cert_file = generate_cert_chain(server, port, timeout=timeout, allow_fallback=allow_fallback)
+        
+        if cert_file:
+            print(f"\n✓ Certificate generation successful!")
+            print(f"  Certificate file: {cert_file}")
+            
+            # Validate the certificate file
+            if os.path.exists(cert_file):
+                file_size = os.path.getsize(cert_file)
+                print(f"  File size: {file_size} bytes")
+                
+                # Read and validate PEM format
+                try:
+                    with open(cert_file, 'r') as f:
+                        cert_content = f.read()
+                    
+                    # Count certificates in the file
+                    cert_count = len(re.findall(
+                        r'-----BEGIN CERTIFICATE-----',
+                        cert_content
+                    ))
+                    print(f"  Certificates in chain: {cert_count}")
+                    
+                    if cert_count > 0:
+                        print("✓ Certificate file is valid PEM format")
+                        
+                        # Print the certificate content
+                        print("\n" + "-" * 80)
+                        print("GENERATED CERTIFICATE CONTENT:")
+                        print("-" * 80)
+                        print(cert_content)
+                        print("-" * 80)
+                    else:
+                        print("⚠ WARNING: Certificate file exists but contains no certificates")
+                        
+                except Exception as e:
+                    print(f"⚠ WARNING: Could not read certificate file: {e}")
+            else:
+                print(f"✗ ERROR: Certificate file was not created: {cert_file}")
+                return False
+        else:
+            if allow_fallback:
+                print("\n⚠ Certificate generation returned None (fallback mode)")
+                print("  This is expected for private link connections that cannot be reached directly.")
+                print("  The connector will use the provided cdw_cert or attempt connection without certificate.")
+                return True  # This is acceptable in fallback mode
+            else:
+                print("\n✗ Certificate generation failed - no certificate file created")
+                return False
+        
+        print("\n" + "=" * 80)
+        print("✓ CERTIFICATE GENERATION TEST PASSED")
+        print("=" * 80)
+        return True
+        
+    except Exception as e:
+        print(f"\n✗ Certificate generation test failed: {e}")
+        print(f"  Error type: {type(e).__name__}")
+        
+        print("\nTroubleshooting Steps:")
+        print(f"  1. Verify OpenSSL is installed: openssl version")
+        print(f"  2. Check network connectivity to {server}:{port}")
+        print(f"  3. Verify firewall/security group rules allow connections")
+        
+        if is_privatelink:
+            print(f"  4. For private links, certificate generation may fail if:")
+            print(f"     - The endpoint is not accessible from this environment")
+            print(f"     - DNS resolution fails")
+            print(f"     - This is expected and the connector will use cdw_cert instead")
+        
+        return False
+        
+    finally:
+        # Clean up temporary certificate file if created
+        if cert_file and os.path.exists(cert_file):
+            try:
+                os.unlink(cert_file)
+                print(f"\n✓ Cleaned up temporary certificate file: {cert_file}")
+            except Exception as e:
+                print(f"⚠ Warning: Could not delete temporary certificate file {cert_file}: {e}")
 
 
-def verify_dns_resolution(hostname: str) -> bool:
-    """
-    Verify DNS resolution for a hostname, especially important for private links.
+def verify_dns_resolution(hostname: str, timeout: int = 10) -> bool:
+    """Verify DNS resolution for a hostname, especially important for private links.
     
     Args:
         hostname: Hostname to resolve
+        timeout: DNS resolution timeout in seconds
         
     Returns:
         True if DNS resolution succeeds, False otherwise
     """
     try:
-        socket.gethostbyname(hostname)
-        log.info(f"DNS resolution successful for {hostname}")
+        print(f"Verifying DNS resolution for {hostname}...")
+        ip = socket.gethostbyname(hostname)
+        print(f"✓ DNS resolution successful: {hostname} -> {ip}")
         return True
     except socket.gaierror as e:
-        log.warning(f"DNS resolution failed for {hostname}: {e}")
+        print(f"✗ DNS resolution failed for {hostname}: {e}")
         return False
     except Exception as e:
-        log.warning(f"Error during DNS resolution for {hostname}: {e}")
+        print(f"✗ Error during DNS resolution for {hostname}: {e}")
         return False
 
 
-def connect_to_sql_server(configuration: dict):
-    """
-    Connect to SQL Server using TDS with SSL certificate chain.
+def test_connection(configuration: dict) -> bool:
+    """Test connection to SQL Server using the provided configuration.
     
     Args:
-        configuration: Configuration dictionary with connection parameters
+        configuration: Dictionary containing connection parameters
         
     Returns:
-        pytds connection object
-        
-    Raises:
-        ValueError: If required configuration parameters are missing
-        ConnectionRefusedError: If connection is refused
-        TimeoutError: If connection times out
-        RuntimeError: For other connection errors
+        True if connection successful, False otherwise
     """
+    print("\n" + "=" * 80)
+    print("SQL SERVER AUTHENTICATION TEST")
+    print("=" * 80)
+    
     # Determine platform-specific keys
     is_local = platform.system() == "Darwin"
     server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
@@ -120,136 +418,134 @@ def connect_to_sql_server(configuration: dict):
     
     # Validate required parameters
     if not server:
-        raise ValueError(f"Missing required configuration: {server_key}")
+        print(f"✗ ERROR: Missing required configuration: {server_key}")
+        return False
+    
     if not port_str:
-        raise ValueError(f"Missing required configuration: {port_key}")
+        print(f"✗ ERROR: Missing required configuration: {port_key}")
+        return False
     
     try:
         port = int(port_str)
     except (ValueError, TypeError):
-        raise ValueError(f"Invalid port value: {port_str}. Port must be a number.")
+        print(f"✗ ERROR: Invalid port value: {port_str}. Port must be a number.")
+        return False
     
     if not database:
-        raise ValueError("Missing required configuration: MSSQL_DATABASE")
+        print("✗ ERROR: Missing required configuration: MSSQL_DATABASE")
+        return False
+    
     if not user:
-        raise ValueError("Missing required configuration: MSSQL_USER")
+        print("✗ ERROR: Missing required configuration: MSSQL_USER")
+        return False
+    
     if not password:
-        raise ValueError("Missing required configuration: MSSQL_PASSWORD")
+        print("✗ ERROR: Missing required configuration: MSSQL_PASSWORD")
+        return False
     
     # Check if this is a private link connection
     is_privatelink = 'privatelink' in server.lower()
     
-    log.info(f"Connecting to SQL Server: {server}:{port}")
-    log.info(f"Database: {database}, User: {user}")
+    print(f"\nConnection Details:")
+    print(f"  Server: {server}")
+    print(f"  Port: {port}")
+    print(f"  Database: {database}")
+    print(f"  User: {user}")
+    print(f"  Private Link: {'Yes' if is_privatelink else 'No'}")
+    print(f"  Certificate Provided: {'Yes' if cdw_cert else 'No'}")
+    
+    # For private links, verify DNS resolution first
     if is_privatelink:
-        log.info("Private link connection detected")
-        # Verify DNS resolution
+        print("\n" + "-" * 80)
+        print("Private Link DNS Verification")
+        print("-" * 80)
         if not verify_dns_resolution(server):
-            log.warning(f"DNS resolution warning for private link {server}, but proceeding")
+            print("⚠ WARNING: DNS resolution failed, but proceeding with connection attempt")
+        else:
+            print("✓ DNS resolution confirmed")
     
     # Handle certificate configuration
     cafile = None
     cafile_cfg = cdw_cert.strip() if cdw_cert else None
     
     if cafile_cfg:
-        log.info("cdw_cert found in configuration - using provided certificate")
-        
-        # Decode JSON-escaped sequences (e.g., \\n -> \n, \\t -> \t, etc.)
-        # This handles certificates stored in JSON config files where newlines are escaped
-        # When certificates are stored in JSON, newlines are often escaped as \\n
-        # We need to convert these to actual newlines for PEM parsing to work
-        original_length = len(cafile_cfg)
-        # Replace escaped sequences (looking for literal backslash-n, not actual newline)
-        cafile_cfg = cafile_cfg.replace('\\n', '\n').replace('\\t', '\t').replace('\\r', '\r')
-        if len(cafile_cfg) != original_length:
-            log.info("Decoded JSON escape sequences in certificate (\\n -> newline, \\t -> tab, \\r -> carriage return)")
+        print("\n" + "-" * 80)
+        print("Certificate Configuration")
+        print("-" * 80)
+        print("cdw_cert found in configuration - using provided certificate")
         
         if cafile_cfg.lstrip().startswith("-----BEGIN"):
             # Inline certificate (PEM format)
-            log.info("Using inline certificate from cdw_cert configuration")
+            print("✓ Detected inline PEM certificate")
             if not OPENSSL_AVAILABLE:
-                raise RuntimeError("OpenSSL Python bindings required for inline certificate support. Install pyopenssl.")
+                print("✗ ERROR: OpenSSL Python bindings not available. Install pyopenssl package.")
+                return False
             
             try:
                 # Build a fresh X509 store and attach it to the SSL context
                 ctx = SSL.Context(SSL.TLS_METHOD)
                 ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
                 
-                # Look for both certificates and certificate chains
-                # Support multiple PEM block types: CERTIFICATE, RSA PRIVATE KEY, etc.
                 pem_blocks = re.findall(
-                    r'-----BEGIN (?:CERTIFICATE|RSA PRIVATE KEY|PRIVATE KEY|PUBLIC KEY)-----.+?-----END (?:CERTIFICATE|RSA PRIVATE KEY|PRIVATE KEY|PUBLIC KEY)-----',
+                    r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
                     cafile_cfg, re.DOTALL
                 )
                 
-                # If no blocks found with the broader pattern, try just certificates
                 if not pem_blocks:
-                    pem_blocks = re.findall(
-                        r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
-                        cafile_cfg, re.DOTALL
-                    )
-                
-                if not pem_blocks:
-                    # Log the first 200 chars for debugging
-                    log.warning(f"No PEM blocks found. Certificate starts with: {cafile_cfg[:200]}")
-                    raise ValueError("No valid certificates found in cdw_cert configuration")
+                    print("✗ ERROR: No valid certificates found in cdw_cert configuration")
+                    return False
                 
                 # Retrieve existing store and add each PEM certificate
                 store = ctx.get_cert_store()
                 if store is None:
-                    raise RuntimeError("Failed to retrieve certificate store from SSL context")
+                    print("✗ ERROR: Failed to retrieve certificate store from SSL context")
+                    return False
                 
-                certificates_loaded = 0
                 for pem in pem_blocks:
-                    # Only process certificates, skip private keys
-                    if '-----BEGIN CERTIFICATE-----' in pem:
-                        certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
-                        store.add_cert(certificate)
-                        certificates_loaded += 1
-                    else:
-                        log.info(f"Skipping non-certificate PEM block (likely a private key)")
-                
-                if certificates_loaded == 0:
-                    raise ValueError("No certificates found in cdw_cert configuration (only private keys or other PEM blocks)")
+                    certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
+                    store.add_cert(certificate)
                 
                 # Configure pytds to use the custom SSL context
                 pytds.tls.create_context = lambda cafile: ctx
                 cafile = 'ignored'
-                log.info(f"Loaded {certificates_loaded} certificate(s) from inline cdw_cert configuration")
+                print(f"✓ Loaded {len(pem_blocks)} certificate(s) from inline cdw_cert configuration")
                 
             except Exception as e:
-                log.severe(f"Failed to process inline certificate from cdw_cert: {e}")
-                log.severe(f"Certificate preview (first 300 chars): {cafile_cfg[:300]}")
-                raise RuntimeError(f"Invalid cdw_cert configuration: {e}")
+                print(f"✗ ERROR: Failed to process inline certificate from cdw_cert: {e}")
+                return False
                 
         elif os.path.isfile(cafile_cfg):
             # Certificate file path
-            log.info(f"Using certificate file from cdw_cert: {cafile_cfg}")
+            print(f"✓ Using certificate file: {cafile_cfg}")
             cafile = cafile_cfg
         else:
             # Try to create a temp file with the content
-            log.warning("cdw_cert doesn't appear to be a file path or inline PEM. Creating temp file...")
+            print("⚠ Certificate doesn't appear to be a file path or inline PEM. Creating temp file...")
             try:
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem', mode='w')
                 tmp.write(cafile_cfg)
                 tmp.flush()
                 tmp.close()
                 cafile = tmp.name
-                log.info(f"Created temporary certificate file from cdw_cert: {cafile}")
+                print(f"✓ Created temporary certificate file: {cafile}")
             except Exception as e:
-                log.severe(f"Failed to process cdw_cert value: {e}")
-                raise RuntimeError(f"Invalid cdw_cert configuration: {e}")
+                print(f"✗ ERROR: Failed to process cdw_cert value: {e}")
+                return False
     else:
-        log.warning("No cdw_cert provided. Connection will proceed without certificate validation.")
+        print("\n⚠ WARNING: No cdw_cert provided. Connection will proceed without certificate validation.")
         if is_privatelink:
-            log.warning("For private links, certificate is typically required.")
+            print("⚠ WARNING: For private links, certificate is typically required.")
     
     # Prepare connection parameters
-    connection_timeout = int(configuration.get("connection_timeout", "60" if is_privatelink else "30"))
-    max_connection_retries = int(configuration.get("connection_retries", "3" if is_privatelink else "1"))
+    connection_timeout = int(configuration.get("connection_timeout", 60 if is_privatelink else 30))
+    max_connection_retries = int(configuration.get("connection_retries", 3 if is_privatelink else 1))
     base_retry_delay = 2
     
-    log.info(f"Attempting connection with timeout: {connection_timeout}s, max retries: {max_connection_retries}")
+    print("\n" + "-" * 80)
+    print("Connection Attempt")
+    print("-" * 80)
+    print(f"Timeout: {connection_timeout}s")
+    print(f"Max Retries: {max_connection_retries}")
     
     conn_params = {
         'server': server,
@@ -264,12 +560,12 @@ def connect_to_sql_server(configuration: dict):
     # Handle certificate file for authentication
     if cafile and cafile != 'ignored':
         conn_params['cafile'] = cafile
-        log.info(f"Using certificate file for authentication: {cafile}")
+        print(f"✓ Using certificate file for authentication: {cafile}")
     elif cafile == 'ignored':
-        log.info("Using inline certificate for authentication")
+        print("✓ Using inline certificate for authentication")
         # Custom SSL context already configured via pytds.tls.create_context
     elif cafile is None:
-        log.warning("No certificate - connection will proceed without certificate validation")
+        print("⚠ No certificate - connection will proceed without certificate validation")
     
     # Retry loop for connection attempts
     last_error = None
@@ -277,217 +573,206 @@ def connect_to_sql_server(configuration: dict):
         try:
             if attempt > 0:
                 delay = base_retry_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
-                log.info(f"Connection attempt {attempt + 1}/{max_connection_retries} after {delay:.2f}s delay")
+                print(f"\nRetry attempt {attempt + 1}/{max_connection_retries} after {delay:.2f}s delay...")
                 time.sleep(delay)
             
-            log.info(f"Connection attempt {attempt + 1}/{max_connection_retries} to {server}:{port}")
-            conn = pytds.connect(**conn_params)
-            log.info("Successfully connected to SQL Server database")
-            return conn
+            print(f"\nConnection attempt {attempt + 1}/{max_connection_retries}...")
+            print(f"  Connecting to {server}:{port}...")
             
-        except (ConnectionRefusedError, TimeoutError, OSError) as e:
+            conn = pytds.connect(**conn_params)
+            
+            print("\n" + "=" * 80)
+            print("✓ SUCCESS: Connection established!")
+            print("=" * 80)
+            
+            # Test a simple query
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT @@VERSION AS version")
+                row = cursor.fetchone()
+                if row:
+                    version = row[0] if isinstance(row, (list, tuple)) else row.get('version', 'N/A')
+                    print(f"\nSQL Server Version:")
+                    print(f"  {version[:100]}...")  # First 100 chars
+                
+                cursor.execute("SELECT DB_NAME() AS current_database")
+                row = cursor.fetchone()
+                if row:
+                    db_name = row[0] if isinstance(row, (list, tuple)) else row.get('current_database', 'N/A')
+                    print(f"\nCurrent Database: {db_name}")
+                
+                cursor.execute("SELECT SYSTEM_USER AS current_user")
+                row = cursor.fetchone()
+                if row:
+                    user_name = row[0] if isinstance(row, (list, tuple)) else row.get('current_user', 'N/A')
+                    print(f"Current User: {user_name}")
+                
+                cursor.close()
+                conn.close()
+                
+                print("\n✓ Authentication test completed successfully!")
+                return True
+                
+            except Exception as query_error:
+                print(f"\n⚠ WARNING: Connection successful but query failed: {query_error}")
+                conn.close()
+                return True  # Connection worked, query issue is separate
+                
+        except ConnectionRefusedError as e:
             last_error = e
-            log.warning(f"Connection error on attempt {attempt + 1}/{max_connection_retries}: {e}")
+            print(f"✗ Connection refused: {e}")
+            if attempt + 1 >= max_connection_retries:
+                break
+            continue
+            
+        except TimeoutError as e:
+            last_error = e
+            print(f"✗ Connection timeout: {e}")
+            if attempt + 1 >= max_connection_retries:
+                break
+            continue
+            
+        except OSError as e:
+            last_error = e
+            error_str = str(e).lower()
+            if 'connection refused' in error_str or 'errno 111' in error_str:
+                print(f"✗ Connection refused (OSError): {e}")
+            elif 'timeout' in error_str:
+                print(f"✗ Connection timeout (OSError): {e}")
+            else:
+                print(f"✗ Network error (OSError): {e}")
             if attempt + 1 >= max_connection_retries:
                 break
             continue
             
         except Exception as e:
             last_error = e
-            log.severe(f"Non-retryable connection error: {e}")
-            raise
+            print(f"✗ Connection error: {e}")
+            print(f"  Error type: {type(e).__name__}")
+            if attempt + 1 >= max_connection_retries:
+                break
+            continue
     
     # All retries exhausted
+    print("\n" + "=" * 80)
+    print("✗ FAILED: Connection could not be established")
+    print("=" * 80)
+    
     if last_error:
         error_str = str(last_error).lower()
-        if 'connection refused' in error_str or 'errno 111' in error_str:
-            raise ConnectionRefusedError(f"Connection refused to {server}:{port} after {max_connection_retries} attempts: {last_error}")
-        elif 'timeout' in error_str:
-            raise TimeoutError(f"Connection timeout to {server}:{port} after {max_connection_retries} attempts: {last_error}")
-        else:
-            raise RuntimeError(f"Failed to connect to {server}:{port} after {max_connection_retries} attempts: {last_error}")
-    
-    raise RuntimeError(f"Failed to connect to {server}:{port} - unknown error")
-
-
-def schema(configuration: dict):
-    """
-    Define the schema function which lets you configure the schema your connector delivers.
-    See: https://fivetran.com/docs/connectors/connector-sdk/technical-reference#schema
-    
-    Args:
-        configuration: Dictionary containing configuration settings
+        print(f"\nLast Error: {last_error}")
+        print(f"Error Type: {type(last_error).__name__}")
         
-    Returns:
-        List of table definitions with table name and primary key
-    """
-    return [
-        {
-            "table": "auth_test_results",
-            "primary_key": ["test_id"],
-            "columns": {
-                "test_id": "STRING",
-                "test_timestamp": "STRING",
-                "server_address": "STRING",
-                "database_name": "STRING",
-                "connection_status": "STRING",
-                "dns_resolution": "STRING",
-                "certificate_used": "STRING",
-                "sql_server_version": "STRING",
-                "current_database": "STRING",
-                "current_user": "STRING",
-                "error_message": "STRING"
-            }
-        },
-    ]
-
-
-def update(configuration: dict, state: dict):
-    """
-    Define the update function, which is called by Fivetran during each sync.
-    See: https://fivetran.com/docs/connectors/connector-sdk/technical-reference#update
-    
-    Args:
-        configuration: Dictionary containing connection details
-        state: Dictionary containing state information from previous runs
-               (empty for first sync or for any full re-sync)
-    """
-    log.info("Starting authentication test")
-    
-    # Validate configuration
-    validate_configuration(configuration=configuration)
-    
-    # Determine platform-specific keys
-    is_local = platform.system() == "Darwin"
-    server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
-    
-    # Extract configuration parameters
-    server = configuration.get(server_key)
-    database = configuration.get("MSSQL_DATABASE")
-    cdw_cert = configuration.get("cdw_cert", "")
-    
-    # Generate test ID
-    test_id = f"test_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-    test_timestamp = datetime.utcnow().isoformat() + "Z"
-    
-    # Initialize result data
-    result_data = {
-        "test_id": test_id,
-        "test_timestamp": test_timestamp,
-        "server_address": server or "N/A",
-        "database_name": database or "N/A",
-        "connection_status": "FAILED",
-        "dns_resolution": "NOT_TESTED",
-        "certificate_used": "No" if not cdw_cert else "Yes",
-        "sql_server_version": "N/A",
-        "current_database": "N/A",
-        "current_user": "N/A",
-        "error_message": "N/A"
-    }
-    
-    try:
-        # Test DNS resolution for private links
-        is_privatelink = 'privatelink' in (server or '').lower()
+        print("\nTroubleshooting Steps:")
+        print(f"  1. Verify server address: {server}")
+        print(f"  2. Verify port: {port}")
+        print(f"  3. Check network connectivity: Can you reach {server}:{port}?")
+        print(f"  4. Verify firewall/security group rules allow connections")
+        
         if is_privatelink:
-            log.info("Testing DNS resolution for private link")
-            if verify_dns_resolution(server):
-                result_data["dns_resolution"] = "SUCCESS"
-            else:
-                result_data["dns_resolution"] = "FAILED"
-                log.warning("DNS resolution failed, but proceeding with connection attempt")
-        
-        # Attempt connection
-        log.info("Attempting to connect to SQL Server")
-        conn = connect_to_sql_server(configuration)
-        
-        # Connection successful - test queries
-        result_data["connection_status"] = "SUCCESS"
-        log.info("Connection successful - executing test queries")
-        
-        try:
-            cursor = conn.cursor()
-            
-            # Get SQL Server version
-            cursor.execute("SELECT @@VERSION AS version")
-            row = cursor.fetchone()
-            if row:
-                version = row[0] if isinstance(row, (list, tuple)) else row.get('version', 'N/A')
-                result_data["sql_server_version"] = str(version)[:200]  # Limit length
-                log.info(f"SQL Server version retrieved: {str(version)[:100]}...")
-            
-            # Get current database
-            cursor.execute("SELECT DB_NAME() AS current_database")
-            row = cursor.fetchone()
-            if row:
-                db_name = row[0] if isinstance(row, (list, tuple)) else row.get('current_database', 'N/A')
-                result_data["current_database"] = str(db_name)
-                log.info(f"Current database: {db_name}")
-            
-            # Get current user
-            cursor.execute("SELECT SYSTEM_USER AS current_user")
-            row = cursor.fetchone()
-            if row:
-                user_name = row[0] if isinstance(row, (list, tuple)) else row.get('current_user', 'N/A')
-                result_data["current_user"] = str(user_name)
-                log.info(f"Current user: {user_name}")
-            
-            cursor.close()
-            conn.close()
-            
-            log.info("Authentication test completed successfully")
-            
-        except Exception as query_error:
-            log.warning(f"Connection successful but query failed: {query_error}")
-            result_data["error_message"] = f"Query error: {str(query_error)}"
-            conn.close()
-        
-        # Upsert test result - direct operation call without yield
-        op.upsert(table="auth_test_results", data=result_data)
-        log.info(f"Test result recorded: {test_id}")
-        
-    except Exception as e:
-        # Connection or other error
-        error_msg = str(e)
-        result_data["connection_status"] = "FAILED"
-        result_data["error_message"] = error_msg
-        log.severe(f"Authentication test failed: {error_msg}")
-        
-        # Upsert test result with error - direct operation call without yield
-        op.upsert(table="auth_test_results", data=result_data)
-        log.info(f"Test result recorded with error: {test_id}")
-        
-        # Don't raise - we want to record the failure
-        log.warning("Authentication test failed, but result has been recorded")
+            print(f"  5. For private links, verify:")
+            print(f"     - DNS resolution: nslookup {server}")
+            print(f"     - Private link endpoint is accessible from this environment")
+            print(f"     - VPC peering/routing is configured correctly")
+            print(f"     - Security groups allow traffic from this source")
+            print(f"     - Certificate (cdw_cert) is correct and valid")
+        else:
+            print(f"  5. Check if SQL Server is running and listening on port {port}")
+            print(f"  6. Verify username and password are correct")
     
-    # Update state for next run
-    new_state = {
-        "last_test_timestamp": test_timestamp,
-        "last_test_id": test_id
+    return False
+
+
+def main():
+    """Main function to run the authentication test."""
+    
+    # Configuration - UPDATE THESE VALUES
+    configuration = {
+        # Server configuration (platform-specific)
+        "MSSQL_SERVER": "",
+        "MSSQL_SERVER_DIR": "",
+        "MSSQL_PORT": "1434",
+        "MSSQL_PORT_DIR": "1434",
+        
+        # Database configuration
+        "MSSQL_DATABASE": "cdw",
+        "MSSQL_USER": "your_username",  # UPDATE THIS
+        "MSSQL_PASSWORD": "your_password",  # UPDATE THIS
+        "MSSQL_SCHEMA": "",
+        
+        # Certificate (PEM format - can be inline or file path)
+        # If inline, must start with "-----BEGIN CERTIFICATE-----"
+        "cdw_cert": "",  # UPDATE THIS with your certificate
+        
+        # Connection options
+        "connection_timeout": "60",  # seconds
+        "connection_retries": "3",  # number of retry attempts
+        "cert_generation_timeout": "30",  # seconds for certificate generation
     }
     
-    # Checkpoint state to save progress
-    # This ensures the sync can resume from the correct position
-    # See: https://fivetran.com/docs/connectors/connector-sdk/best-practices#largedatasetrecommendation
-    op.checkpoint(state=new_state)
+    # Alternative: Load from configuration.json file if it exists
+    config_file = "configuration.json"
+    if os.path.exists(config_file):
+        print(f"Loading configuration from {config_file}...")
+        try:
+            with open(config_file, 'r') as f:
+                file_config = json.load(f)
+                # Merge file config with defaults (file config takes precedence)
+                configuration.update(file_config)
+                print("✓ Configuration loaded from file")
+        except Exception as e:
+            print(f"⚠ Warning: Could not load configuration from file: {e}")
+            print("Using hardcoded configuration values")
     
-    log.info("Authentication test sync completed")
+    # Check if required values are still placeholders
+    if configuration.get("MSSQL_USER") == "your_username":
+        print("\n⚠ WARNING: MSSQL_USER is still set to placeholder value 'your_username'")
+        print("   Please update the configuration with your actual username")
+    
+    if configuration.get("MSSQL_PASSWORD") == "your_password":
+        print("⚠ WARNING: MSSQL_PASSWORD is still set to placeholder value 'your_password'")
+        print("   Please update the configuration with your actual password")
+    
+    if not configuration.get("cdw_cert", "").strip():
+        print("⚠ WARNING: cdw_cert is empty")
+        print("   For private link connections, certificate is typically required")
+        response = input("\nContinue without certificate? (y/N): ")
+        if response.lower() != 'y':
+            print("Exiting. Please provide cdw_cert in configuration.")
+            return
+    
+    # Run certificate generation test first
+    print("\n" + "=" * 80)
+    print("RUNNING CERTIFICATE GENERATION TEST")
+    print("=" * 80)
+    cert_test_success = test_cert_generation(configuration)
+    
+    if not cert_test_success:
+        print("\n⚠ WARNING: Certificate generation test failed or was skipped")
+        print("  This may be expected for private link connections.")
+        response = input("\nContinue with connection test anyway? (y/N): ")
+        if response.lower() != 'y':
+            print("Exiting. Please check certificate generation issues.")
+            return
+    
+    # Run the connection test
+    print("\n" + "=" * 80)
+    print("RUNNING CONNECTION TEST")
+    print("=" * 80)
+    success = test_connection(configuration)
+    
+    if success:
+        print("\n" + "=" * 80)
+        print("TEST RESULT: ✓ PASSED")
+        print("=" * 80)
+        exit(0)
+    else:
+        print("\n" + "=" * 80)
+        print("TEST RESULT: ✗ FAILED")
+        print("=" * 80)
+        exit(1)
 
 
-# Initialize the connector with the defined update and schema functions
-connector = Connector(update=update, schema=schema)
-
-# Check if the script is being run as the main module.
-# This is Python's standard entry method allowing your script to be run directly from the command line or IDE 'run' button.
-# This is useful for debugging while you write your code. Note this method is not called by Fivetran when executing your connector in production.
-# Please test using the Fivetran debug command prior to finalizing and deploying your connector.
 if __name__ == "__main__":
-    # Open the configuration.json file and load its contents
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(current_dir, "configuration.json")
-    
-    with open(config_path, 'r') as f:
-        configuration = json.load(f)
-    
-    # Test the connector locally
-    connector.debug(configuration=configuration)
+    main()
 
