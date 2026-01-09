@@ -1,9 +1,21 @@
-# Fivetran API Python framework
+# Fivetran API Python Framework
 
-This framework provides a simple way to interact with the Fivetran API using Python. You can interact with the Fivetran REST API using Python to facilitate automation workflows. Test out a few of the example use cases and determine the best path forward for automating Fivetran activity/monitoring.
+This repository is owned and maintained by the [Fivetran Professional Services](https://www.fivetran.com/professional-services) team. It provides a Python-based framework for interacting with the Fivetran REST API to support automation, monitoring, and advanced integration workflows.
 
-## Disclaimer:
- This framework is intended to help consumers better understand the Fivetran API. It can be used as a 'jumping off point' for custom solutions that a organization may require.
+The repository also includes example solutions from customer engagements covering:
+
+- AI-driven workflows
+- HVR (High Volume Replication) automation
+- MCP-based orchestration patterns
+- Fivetran Connector SDK integrations
+
+These examples are designed to be educational and practical, helping teams understand what’s possible with the Fivetran platform and accelerate real-world implementations.
+
+If you’d like guidance, customization, or hands-on support, book a demo with [Fivetran Professional Services](https://go.fivetran.com/demo/services) to connect with our experts.
+
+## Disclaimer
+
+This repository is provided as a reference implementation to help users better understand and work with Fivetran automations. It is intended as a starting point for custom solutions that may require additional design, hardening, or scaling for enterprise use.
 
 ## Resources:
 - [Fivetran API Docs](https://fivetran.com/docs/rest-api)
