@@ -1,0 +1,8 @@
+{
+    "api_key": "your_fivetran_api_key_here",
+    "api_secret": "your_fivetran_api_secret_here",
+    "group_id": "your_fivetran_group_id_here",
+    "blackout_periods": "monday-friday,9am-11pm;saturday,10am-6pm",
+    "timezone": "America/New_York",
+    "connector_ids": "connection_id_1,connection_id_2"
+}
