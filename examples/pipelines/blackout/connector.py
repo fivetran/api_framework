@@ -23,28 +23,20 @@ TIME_FORMATS = ['%H:%M', '%I:%M%p', '%I:%M %p', '%I%p', '%I:%M%p']
 
 def parse_connector_ids(connector_ids_str: str) -> List[str]:
     """
-    Parse the connector IDs string into a list of connector IDs.
-    Expected format: "connector1,connector2,connector3" or "connector1;connector2;connector3"
+    Parse the comma-separated connector IDs string into a list of connector IDs.
+    Expected format: "connector1,connector2,connector3"
     Args:
-        connector_ids_str: Comma or semicolon-separated string of connector IDs
+        connector_ids_str: Comma-separated string of connector IDs
     Returns:
         List of connector IDs, or empty list if string is empty
     """
     if not connector_ids_str or not connector_ids_str.strip():
         return []
     
-    # Split by comma or semicolon, then clean up whitespace
-    connector_ids = []
-    for separator in [',', ';']:
-        if separator in connector_ids_str:
-            connector_ids = [cid.strip() for cid in connector_ids_str.split(separator) if cid.strip()]
-            break
+    # Split by comma and clean up whitespace
+    connector_ids = [cid.strip() for cid in connector_ids_str.split(',') if cid.strip()]
     
-    # If no separators found, treat as single connector ID
-    if not connector_ids:
-        connector_ids = [connector_ids_str.strip()]
-    
-    log.info(f"Parsed connector IDs: {connector_ids}")
+    log.info(f"Parsed {len(connector_ids)} connector ID(s) from comma-separated string")
     return connector_ids
 
 def validate_configuration(configuration: dict):
@@ -57,7 +49,7 @@ def validate_configuration(configuration: dict):
         ValueError: if any required configuration parameter is missing.
     """
     # Validate required configuration parameters
-    required_configs = ["api_key", "api_secret", "group_id", "blackout_periods"]
+    required_configs = ["api_key", "api_secret", "group_id", "blackout_periods", "connector_ids"]
     for key in required_configs:
         if key not in configuration:
             raise ValueError(f"Missing required configuration value: {key}")
@@ -67,10 +59,12 @@ def validate_configuration(configuration: dict):
     if not blackout_periods:
         raise ValueError("Blackout periods cannot be empty")
     
-    # Validate connector_ids if provided (optional field)
+    # Validate connector_ids - required for scalability
     connector_ids = configuration.get("connector_ids", "")
-    if connector_ids and not isinstance(connector_ids, str):
-        raise ValueError("connector_ids must be a string if provided")
+    if not connector_ids or not connector_ids.strip():
+        raise ValueError("connector_ids is required and cannot be empty")
+    if not isinstance(connector_ids, str):
+        raise ValueError("connector_ids must be a comma-separated string")
 
 def parse_blackout_periods(blackout_periods: str) -> List[Dict]:
     """
@@ -297,9 +291,29 @@ def make_fivetran_api_request(method: str, endpoint: str, api_key: str, api_secr
         log.severe(f'Fivetran API request failed: {e}')
         return None
 
+def get_connector_details(api_key: str, api_secret: str, connector_id: str) -> Optional[Dict]:
+    """
+    Get details of a specific connector by ID.
+    This is more scalable than fetching all connectors and filtering.
+    Args:
+        api_key: Fivetran API key
+        api_secret: Fivetran API secret
+        connector_id: Fivetran connector ID
+    Returns:
+        Connector details dictionary or None if not found
+    """
+    endpoint = f'connectors/{connector_id}'
+    response = make_fivetran_api_request('GET', endpoint, api_key, api_secret)
+    
+    if response and response.get('code') == 'Success':
+        return response.get('data', {})
+    
+    return None
+
 def get_connector_status(api_key: str, api_secret: str, group_id: str) -> List[Dict]:
     """
     Get status of all connectors in a group.
+    This is used as a fallback when connector_ids are not specified.
     Args:
         api_key: Fivetran API key
         api_secret: Fivetran API secret
@@ -411,12 +425,12 @@ def update(configuration: dict, state: dict):
         parsed_periods = parse_blackout_periods(blackout_periods_str)
         log.info(f"Parsed {len(parsed_periods)} blackout period(s)")
         
-        # Parse connector IDs if specified
+        # Parse connector IDs - required for scalable operation
         target_connector_ids = parse_connector_ids(connector_ids_str)
-        if target_connector_ids:
-            log.info(f"Filtering to specific connector IDs: {target_connector_ids}")
-        else:
-            log.info("No specific connector IDs specified - managing all connectors in group")
+        if not target_connector_ids:
+            raise ValueError("No valid connector IDs found in connector_ids configuration")
+        
+        log.info(f"Processing {len(target_connector_ids)} connector(s) by ID: {target_connector_ids}")
         
         # Get current time in specified timezone
         current_time = datetime.now(tz)
@@ -427,20 +441,17 @@ def update(configuration: dict, state: dict):
         in_blackout = is_in_blackout_period(parsed_periods, current_time)
         log.info(f"Currently in blackout period: {in_blackout}")
         
-        # Get connector status
-        connectors = get_connector_status(api_key, api_secret, group_id)
-        log.info(f"Found {len(connectors)} connectors in group {group_id}")
+        # Fetch connectors individually by ID - scalable approach
+        connectors = []
+        for connector_id in target_connector_ids:
+            connector = get_connector_details(api_key, api_secret, connector_id)
+            if connector:
+                connectors.append(connector)
+                log.info(f"Successfully fetched connector {connector_id}")
+            else:
+                log.warning(f"Failed to fetch connector {connector_id} - skipping")
         
-        # Filter connectors if specific IDs are specified
-        if target_connector_ids:
-            original_count = len(connectors)
-            connectors = [c for c in connectors if c.get('id') in target_connector_ids]
-            log.info(f"Filtered from {original_count} to {len(connectors)} connectors based on specified IDs")
-        
-        # Log first connector for debugging
-        #if connectors:
-            #first_connector = connectors[0]
-            #log.info(f"Sample connector data: {first_connector}")
+        log.info(f"Successfully fetched {len(connectors)} out of {len(target_connector_ids)} connector(s)")
         
         # Process each connector
         for connector in connectors:
@@ -466,8 +477,8 @@ def update(configuration: dict, state: dict):
                 "in_blackout_period": in_blackout
             }
             
-            # Upsert connector status record
-            yield op.upsert(table="connector_status", data=status_record)
+            # Upsert connector status record - direct operation call without yield
+            op.upsert(table="connector_status", data=status_record)
             
             # Determine action based on blackout status
             action_taken = None
@@ -513,8 +524,8 @@ def update(configuration: dict, state: dict):
                     "sync_state": sync_state
                 }
                 
-                # Upsert action log record
-                yield op.upsert(table="blackout_log", data=action_record)
+                # Upsert action log record - direct operation call without yield
+                op.upsert(table="blackout_log", data=action_record)
         
         # Update state with the current sync time for the next run
         new_state = {
@@ -527,7 +538,7 @@ def update(configuration: dict, state: dict):
         # from the correct position in case of next sync or interruptions.
         # Learn more about how and where to checkpoint by reading our best practices documentation
         # (https://fivetran.com/docs/connectors/connector-sdk/best-practices#largedatasetrecommendation).
-        yield op.checkpoint(state=new_state)
+        op.checkpoint(state=new_state)
         
         log.info(f"Successfully processed {len(connectors)} connectors. Blackout period active: {in_blackout}")
 
