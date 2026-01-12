@@ -1,0 +1,5 @@
+# Timezone handling
+pytz==2023.3
+
+# Type hints (for Python < 3.9)
+typing-extensions==4.8.0
