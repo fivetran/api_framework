@@ -7,7 +7,6 @@ import concurrent.futures
 from datetime import datetime, timedelta
 import math
 from fivetran_connector_sdk import Connector, Logging as log, Operations as op
-import snowflake.connector
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 import platform
@@ -466,28 +465,6 @@ def generate_cert_chain(server: str, port: int) -> str:
     tmp.flush()
     tmp.close()
     return tmp.name
-
-def connect_to_snowflake(configuration: dict):
-    """Connect to Snowflake database."""
-    private_key_data = configuration.get("private_key", "")
-    private_key_password = configuration.get("private_key_password", "")
-    private_key = None
-    if private_key_data:
-        private_key = serialization.load_pem_private_key(
-            private_key_data.encode('utf-8'),
-            password=private_key_password.encode('utf-8') if private_key_password else None,
-            backend=default_backend()
-        )
-    return snowflake.connector.connect(
-        user=configuration["SNOWFLAKE_USER"],
-        account=configuration["SNOWFLAKE_ACCOUNT"],
-        warehouse=configuration["SNOWFLAKE_WAREHOUSE"],
-        database=configuration["SNOWFLAKE_DATABASE"],
-        schema=configuration["SNOWFLAKE_SCHEMA"],
-        role=configuration["SNOWFLAKE_ROLE"],
-        authenticator="SNOWFLAKE_JWT",
-        private_key=private_key
-    )
 
 def connect_to_mssql(configuration: dict):
     """Connects to MSSQL using TDS with SSL cert chain."""
