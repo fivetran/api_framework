@@ -443,79 +443,351 @@ def flatten_dict(prefix: str, d: Any, result: Dict[str, Any]) -> None:
     else:
         result[prefix] = d if d is not None and d != "" else 'N/A'
 
-def generate_cert_chain(server: str, port: int) -> str:
-    """Generates a certificate chain file by fetching intermediate and root certificates."""
-    proc = subprocess.run(
-        ['openssl', 's_client', '-showcerts', '-connect', f'{server}:{port}'],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-    root_pem = requests.get(
-        'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem'
-    ).text
-    pem_blocks = re.findall(
+def obfuscate_sensitive(value: str, show_chars: int = 4) -> str:
+    """Obfuscate sensitive strings for logging purposes."""
+    if not value or len(value) <= show_chars:
+        return "***" if value else "N/A"
+    return f"{value[:show_chars]}...{value[-show_chars:]}" if len(value) > show_chars * 2 else "***"
+
+def obfuscate_cert(cert_content: str) -> str:
+    """Obfuscate certificate content for logging."""
+    if not cert_content:
+        return "N/A"
+    # Extract first and last few characters of each certificate block
+    cert_blocks = re.findall(
         r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
-        proc.stdout,
+        cert_content,
         re.DOTALL
     )
-    intermediate = pem_blocks[1] if len(pem_blocks) > 1 else pem_blocks[0]
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
-    tmp.write((intermediate + '\n' + root_pem).encode('utf-8'))
-    tmp.flush()
-    tmp.close()
-    return tmp.name
+    if not cert_blocks:
+        return "*** (invalid format) ***"
+    
+    obfuscated = []
+    for i, block in enumerate(cert_blocks):
+        lines = block.split('\n')
+        if len(lines) > 2:
+            first_line = lines[1][:8] if len(lines[1]) > 8 else lines[1]
+            last_line = lines[-2][-8:] if len(lines[-2]) > 8 else lines[-2]
+            obfuscated.append(f"Cert {i+1}: {first_line}...{last_line} ({len(block)} chars)")
+        else:
+            obfuscated.append(f"Cert {i+1}: *** ({len(block)} chars)")
+    
+    return f"{len(cert_blocks)} certificate(s): " + ", ".join(obfuscated)
+
+def generate_cert_chain(server: str, port: int) -> str:
+    """Generates a certificate chain file by fetching intermediate and root certificates.
+    
+    This function connects to the certificate server (typically on port 1434) to retrieve
+    the SSL certificate chain needed for authenticating to the data server.
+    """
+    log.info("=" * 80)
+    log.info("CERTIFICATE GENERATION PROCESS - Step 1: Connect to Certificate Server")
+    log.info("=" * 80)
+    log.info(f"Certificate Server: {server}")
+    log.info(f"Certificate Server Port: {port} (expected: 1434 for privatelink)")
+    
+    try:
+        log.info(f"Step 1.1: Executing OpenSSL s_client to retrieve certificates from {server}:{port}")
+        proc = subprocess.run(
+            ['openssl', 's_client', '-showcerts', '-connect', f'{server}:{port}'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30
+        )
+        
+        if proc.returncode != 0:
+            log.severe(f"OpenSSL connection failed with return code {proc.returncode}")
+            log.severe(f"OpenSSL stderr: {proc.stderr[:500]}")  # Limit error output
+            raise RuntimeError(f"Failed to connect to certificate server {server}:{port}: {proc.stderr}")
+        
+        log.info(f"Step 1.2: OpenSSL connection successful (return code: {proc.returncode})")
+        log.info(f"Step 1.3: Parsing certificate blocks from OpenSSL output")
+        
+        pem_blocks = re.findall(
+            r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
+            proc.stdout,
+            re.DOTALL
+        )
+        
+        if not pem_blocks:
+            log.severe("No certificate blocks found in OpenSSL output")
+            raise RuntimeError("No certificates retrieved from certificate server")
+        
+        log.info(f"Step 1.4: Found {len(pem_blocks)} certificate block(s) from server")
+        
+        # Log obfuscated certificate info
+        for i, block in enumerate(pem_blocks):
+            block_preview = obfuscate_cert(block)
+            log.info(f"  Certificate {i+1}: {block_preview}")
+        
+        intermediate = pem_blocks[1] if len(pem_blocks) > 1 else pem_blocks[0]
+        log.info(f"Step 1.5: Selected {'intermediate' if len(pem_blocks) > 1 else 'server'} certificate")
+        
+        log.info("Step 1.6: Fetching DigiCert root certificate from public CA store")
+        root_pem = requests.get(
+            'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+            timeout=10
+        ).text
+        
+        if not root_pem or 'BEGIN CERTIFICATE' not in root_pem:
+            log.severe("Failed to retrieve root certificate from DigiCert")
+            raise RuntimeError("Root certificate retrieval failed")
+        
+        log.info(f"Step 1.7: Root certificate retrieved ({len(root_pem)} chars)")
+        log.info(f"  Root cert preview: {obfuscate_cert(root_pem)}")
+        
+        log.info("Step 1.8: Creating temporary certificate chain file")
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+        cert_chain = intermediate + '\n' + root_pem
+        tmp.write(cert_chain.encode('utf-8'))
+        tmp.flush()
+        tmp.close()
+        
+        log.info(f"Step 1.9: Certificate chain file created: {tmp.name}")
+        log.info(f"  Chain file size: {len(cert_chain)} bytes")
+        log.info(f"  Chain preview: {obfuscate_cert(cert_chain)}")
+        log.info("=" * 80)
+        log.info("CERTIFICATE GENERATION COMPLETE")
+        log.info("=" * 80)
+        
+        return tmp.name
+        
+    except subprocess.TimeoutExpired:
+        log.severe(f"OpenSSL connection to {server}:{port} timed out after 30 seconds")
+        raise RuntimeError(f"Certificate server connection timeout: {server}:{port}")
+    except requests.RequestException as e:
+        log.severe(f"Failed to retrieve root certificate: {e}")
+        raise RuntimeError(f"Root certificate retrieval failed: {e}")
+    except Exception as e:
+        log.severe(f"Certificate generation failed: {e}")
+        raise
+
 
 def connect_to_mssql(configuration: dict):
-    """Connects to MSSQL using TDS with SSL cert chain."""
+    """Connects to MSSQL using TDS with SSL cert chain.
+    
+    Authentication Flow for Privatelink:
+    1. Connect to MSSQL_CERT_SERVER (port 1434) to retrieve/generate certificate
+    2. Use certificate with cdw_cert configuration for authentication
+    3. Connect to MSSQL_SERVER (port 1433) for data replication
+    """
+    log.info("=" * 80)
+    log.info("MSSQL AUTHENTICATION PROCESS - Initialization")
+    log.info("=" * 80)
+    
+    # Determine environment and configuration keys
     is_local = platform.system() == "Darwin"
     server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
     cert_key = "MSSQL_CERT_SERVER_DIR" if is_local else "MSSQL_CERT_SERVER"
     port_key = "MSSQL_PORT_DIR" if is_local else "MSSQL_PORT"
+    cert_port_key = "MSSQL_CERT_PORT_DIR" if is_local else "MSSQL_CERT_PORT"
+    
+    log.info(f"Step 0.1: Environment detection - Platform: {platform.system()}, Local: {is_local}")
+    log.info(f"Step 0.2: Configuration keys - Server: {server_key}, Cert Server: {cert_key}")
+    
+    # Extract configuration values
     server = configuration.get(server_key)
     cert_server = configuration.get(cert_key)
-    port = configuration.get(port_key)
+    data_port = configuration.get(port_key, "1433")  # Default to 1433 for data server
+    cert_port = configuration.get(cert_port_key, "1434")  # Default to 1434 for cert server
     cafile_cfg = configuration.get("cdw_cert", None)
-
-    if cafile_cfg:
-        if cafile_cfg.lstrip().startswith("-----BEGIN"):
-            import OpenSSL.SSL as SSL, OpenSSL.crypto as crypto, pytds.tls
-            ctx = SSL.Context(SSL.TLS_METHOD)
-            ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
-            pem_blocks = re.findall(
-                r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
-                cafile_cfg, re.DOTALL
-            )
-            store = ctx.get_cert_store()
-            if store is None:
-                raise RuntimeError("Failed to retrieve certificate store from SSL context")
-            for pem in pem_blocks:
-                certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
-                store.add_cert(certificate)
-            pytds.tls.create_context = lambda cafile: ctx
-            cafile = 'ignored'
-        elif os.path.isfile(cafile_cfg):
-            cafile = cafile_cfg
-        else:
-            if not cert_server or not port:
-                raise ValueError("Cannot generate cert chain: server or port missing")
-            cafile = generate_cert_chain(cert_server, int(port))
-    else:
-        if not cert_server or not port:
-            raise ValueError("Cannot generate cert chain: server or port missing")
-        cafile = generate_cert_chain(cert_server, int(port))
-        
+    database = configuration.get("MSSQL_DATABASE")
+    user = configuration.get("MSSQL_USER")
+    password = configuration.get("MSSQL_PASSWORD")
     
-    conn = pytds.connect(
-        server=server,
-        database=configuration["MSSQL_DATABASE"],
-        user=configuration["MSSQL_USER"],
-        password=configuration["MSSQL_PASSWORD"],
-        port=port,
-        cafile=cafile,
-        validate_host=False
-    )
-    return conn
+    # Validate required configuration
+    log.info("Step 0.3: Validating configuration parameters")
+    if not server:
+        log.severe(f"Missing required configuration: {server_key}")
+        raise ValueError(f"Missing required configuration: {server_key}")
+    if not cert_server:
+        log.severe(f"Missing required configuration: {cert_key}")
+        raise ValueError(f"Missing required configuration: {cert_key}")
+    if not database:
+        log.severe("Missing required configuration: MSSQL_DATABASE")
+        raise ValueError("Missing required configuration: MSSQL_DATABASE")
+    if not user:
+        log.severe("Missing required configuration: MSSQL_USER")
+        raise ValueError("Missing required configuration: MSSQL_USER")
+    if not password:
+        log.severe("Missing required configuration: MSSQL_PASSWORD")
+        raise ValueError("Missing required configuration: MSSQL_PASSWORD")
+    
+    # Log configuration (obfuscated)
+    log.info(f"Step 0.4: Configuration summary (sensitive data obfuscated):")
+    log.info(f"  Data Server (MSSQL_SERVER): {server}")
+    log.info(f"  Data Server Port: {data_port} (expected: 1433 for privatelink)")
+    log.info(f"  Certificate Server (MSSQL_CERT_SERVER): {cert_server}")
+    log.info(f"  Certificate Server Port: {cert_port} (expected: 1434 for privatelink)")
+    log.info(f"  Database: {database}")
+    log.info(f"  User: {obfuscate_sensitive(user)}")
+    log.info(f"  Password: {obfuscate_sensitive(password, show_chars=0)}")
+    log.info(f"  CDW Cert provided: {'Yes' if cafile_cfg else 'No'}")
+    if cafile_cfg:
+        log.info(f"  CDW Cert type: {'PEM string' if cafile_cfg.lstrip().startswith('-----BEGIN') else 'File path' if os.path.isfile(cafile_cfg) else 'Invalid'}")
+    
+    log.info("=" * 80)
+    log.info("MSSQL AUTHENTICATION PROCESS - Certificate Handling")
+    log.info("=" * 80)
+    
+    # Handle certificate configuration
+    if cafile_cfg:
+        log.info("Step 1.1: CDW certificate configuration found, processing...")
+        
+        if cafile_cfg.lstrip().startswith("-----BEGIN"):
+            log.info("Step 1.2: Certificate provided as PEM string, loading into SSL context")
+            log.info(f"  Certificate preview: {obfuscate_cert(cafile_cfg)}")
+            
+            try:
+                import OpenSSL.SSL as SSL, OpenSSL.crypto as crypto, pytds.tls
+                
+                log.info("Step 1.3: Creating SSL context with TLS method")
+                ctx = SSL.Context(SSL.TLS_METHOD)
+                
+                log.info("Step 1.4: Setting SSL verification mode (VERIFY_PEER)")
+                ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
+                
+                log.info("Step 1.5: Parsing PEM certificate blocks from configuration")
+                pem_blocks = re.findall(
+                    r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
+                    cafile_cfg, re.DOTALL
+                )
+                
+                if not pem_blocks:
+                    log.severe("No valid certificate blocks found in cdw_cert configuration")
+                    raise ValueError("Invalid certificate format in cdw_cert")
+                
+                log.info(f"Step 1.6: Found {len(pem_blocks)} certificate block(s) in configuration")
+                for i, pem in enumerate(pem_blocks):
+                    log.info(f"  Certificate {i+1}: {obfuscate_cert(pem)}")
+                
+                log.info("Step 1.7: Retrieving certificate store from SSL context")
+                store = ctx.get_cert_store()
+                if store is None:
+                    log.severe("Failed to retrieve certificate store from SSL context")
+                    raise RuntimeError("Failed to retrieve certificate store from SSL context")
+                
+                log.info("Step 1.8: Adding certificates to SSL context store")
+                for i, pem in enumerate(pem_blocks):
+                    try:
+                        certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
+                        store.add_cert(certificate)
+                        log.info(f"  Added certificate {i+1} to store successfully")
+                    except Exception as e:
+                        log.severe(f"Failed to add certificate {i+1} to store: {e}")
+                        raise
+                
+                log.info("Step 1.9: Configuring pytds TLS context factory")
+                pytds.tls.create_context = lambda cafile: ctx
+                cafile = None  # Set to None since SSL context is configured via pytds.tls.create_context
+                
+                log.info("Step 1.10: SSL context configured successfully (using PEM string)")
+                
+            except ImportError as e:
+                log.severe(f"Required OpenSSL libraries not available: {e}")
+                raise RuntimeError(f"OpenSSL libraries required for PEM certificate: {e}")
+            except Exception as e:
+                log.severe(f"Failed to process PEM certificate: {e}")
+                raise
+                
+        elif os.path.isfile(cafile_cfg):
+            log.info(f"Step 1.2: Certificate provided as file path: {cafile_cfg}")
+            log.info(f"  File exists: {os.path.exists(cafile_cfg)}")
+            if os.path.exists(cafile_cfg):
+                file_size = os.path.getsize(cafile_cfg)
+                log.info(f"  File size: {file_size} bytes")
+                # Read and obfuscate cert content for logging
+                try:
+                    with open(cafile_cfg, 'r') as f:
+                        cert_content = f.read()
+                        log.info(f"  Certificate preview: {obfuscate_cert(cert_content)}")
+                except Exception as e:
+                    log.warning(f"  Could not read certificate file for preview: {e}")
+            cafile = cafile_cfg
+            log.info("Step 1.3: Using certificate file path for connection")
+        else:
+            log.warning(f"Step 1.2: CDW cert provided but not a valid PEM string or file path")
+            log.info(f"  Attempting to generate certificate chain from certificate server")
+            if not cert_server or not cert_port:
+                log.severe("Cannot generate cert chain: certificate server or port missing")
+                raise ValueError("Cannot generate cert chain: certificate server or port missing")
+            log.info(f"  Certificate Server: {cert_server}, Port: {cert_port}")
+            cafile = generate_cert_chain(cert_server, int(cert_port))
+    else:
+        log.info("Step 1.1: No CDW certificate configuration found")
+        log.info("Step 1.2: Generating certificate chain from certificate server")
+        if not cert_server or not cert_port:
+            log.severe("Cannot generate cert chain: certificate server or port missing")
+            raise ValueError("Cannot generate cert chain: certificate server or port missing")
+        log.info(f"  Certificate Server: {cert_server}, Port: {cert_port}")
+        cafile = generate_cert_chain(cert_server, int(cert_port))
+    
+    log.info("=" * 80)
+    log.info("MSSQL AUTHENTICATION PROCESS - Database Connection")
+    log.info("=" * 80)
+    log.info(f"Step 2.1: Preparing connection to data server")
+    log.info(f"  Server: {server}")
+    log.info(f"  Port: {data_port} (expected: 1433 for privatelink)")
+    log.info(f"  Database: {database}")
+    log.info(f"  User: {obfuscate_sensitive(user)}")
+    if cafile:
+        log.info(f"  Certificate file: {cafile}")
+    else:
+        log.info(f"  Certificate: SSL Context (configured via pytds.tls.create_context)")
+    log.info(f"  Host validation: Disabled (validate_host=False)")
+    
+    try:
+        log.info("Step 2.2: Establishing TDS connection with SSL/TLS")
+        log.info(f"  Connection parameters:")
+        log.info(f"    - Server: {server}:{data_port}")
+        log.info(f"    - Database: {database}")
+        log.info(f"    - User: {obfuscate_sensitive(user)}")
+        log.info(f"    - Certificate: {'File path' if cafile else 'SSL Context (PEM)'}")
+        
+        conn = pytds.connect(
+            server=server,
+            database=database,
+            user=user,
+            password=password,
+            port=int(data_port),
+            cafile=cafile,
+            validate_host=False
+        )
+        
+        log.info("Step 2.3: Connection established successfully")
+        log.info(f"  Connection object: {type(conn).__name__}")
+        
+        # Test the connection
+        log.info("Step 2.4: Verifying connection with test query")
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT @@VERSION")
+            version = cursor.fetchone()
+            cursor.close()
+            log.info(f"  Server version retrieved: {obfuscate_sensitive(str(version[0]) if version else 'N/A', show_chars=50)}")
+        except Exception as e:
+            log.warning(f"  Connection test query failed (non-critical): {e}")
+        
+        log.info("=" * 80)
+        log.info("MSSQL AUTHENTICATION PROCESS - COMPLETE")
+        log.info("=" * 80)
+        log.info(f"Successfully authenticated to {server}:{data_port}/{database}")
+        log.info("Ready for data replication")
+        log.info("=" * 80)
+        
+        return conn
+        
+    except pytds.tds_base.Error as e:
+        log.severe(f"TDS connection error: {e}")
+        log.severe(f"  Server: {server}:{data_port}")
+        log.severe(f"  Database: {database}")
+        log.severe(f"  User: {obfuscate_sensitive(user)}")
+        raise RuntimeError(f"Failed to connect to MSSQL server: {e}")
+    except Exception as e:
+        log.severe(f"Unexpected connection error: {e}")
+        log.severe(f"  Error type: {type(e).__name__}")
+        raise RuntimeError(f"Unexpected error during MSSQL connection: {e}")
 
 def validate_configuration(configuration: dict) -> None:
     """Validate the configuration dictionary to ensure it contains all required parameters."""
