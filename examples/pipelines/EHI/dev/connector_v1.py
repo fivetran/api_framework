@@ -622,7 +622,6 @@ def connect_to_mssql(configuration: dict):
     log.info(f"  Certificate Server Port: {cert_port} (expected: 1434 for privatelink)")
     log.info(f"  Database: {database}")
     log.info(f"  User: {obfuscate_sensitive(user)}")
-    log.info(f"  Password: {obfuscate_sensitive(password, show_chars=0)}")
     log.info(f"  CDW Cert provided: {'Yes' if cafile_cfg else 'No'}")
     if cafile_cfg:
         log.info(f"  CDW Cert type: {'PEM string' if cafile_cfg.lstrip().startswith('-----BEGIN') else 'File path' if os.path.isfile(cafile_cfg) else 'Invalid'}")
