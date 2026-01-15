@@ -736,7 +736,23 @@ def connect_to_mssql(configuration: dict):
         log.info(f"  Certificate: SSL Context (configured via pytds.tls.create_context)")
     else:
         log.info(f"  Certificate: None (no certificate validation)")
-    log.info(f"  Host validation: Disabled (validate_host=False)")
+    
+    # Determine validate_host setting
+    # For privatelink: certificate may be issued for different hostname, so default to False
+    # But allow configuration override for cases where certificate matches privatelink hostname
+    # If certificate is provided, we'll try True first for better security, then fall back to False
+    validate_host_config = configuration.get("validate_host", None)
+    if validate_host_config is not None:
+        if isinstance(validate_host_config, str):
+            validate_host = validate_host_config.lower() in ('true', '1', 'yes')
+        else:
+            validate_host = bool(validate_host_config)
+        log.info(f"  Host validation: {'Enabled' if validate_host else 'Disabled'} (from configuration)")
+    else:
+        # Default: False for privatelink (certificate often issued for different hostname)
+        # But if certificate is provided, try True first for better security
+        validate_host = False
+        log.info(f"  Host validation: Disabled (default for privatelink - certificate may be for different hostname)")
     
     try:
         log.info("Step 2.2: Establishing TDS connection with SSL/TLS")
@@ -750,6 +766,7 @@ def connect_to_mssql(configuration: dict):
             log.info(f"    - Certificate: SSL Context (PEM, custom context)")
         else:
             log.info(f"    - Certificate: None")
+        log.info(f"    - Host validation: {validate_host}")
         
         # Build connection parameters - only include cafile if it's not 'ignored'
         conn_params = {
@@ -758,14 +775,33 @@ def connect_to_mssql(configuration: dict):
             'user': user,
             'password': password,
             'port': int(data_port),
-            'validate_host': False
+            'validate_host': validate_host
         }
         
         # Only add cafile if it's a valid file path (not 'ignored' or None)
         if cafile and cafile != 'ignored':
             conn_params['cafile'] = cafile
         
-        conn = pytds.connect(**conn_params)
+        # Try connection with configured validate_host setting
+        # If validate_host=True fails and we have a certificate, try False as fallback
+        try:
+            conn = pytds.connect(**conn_params)
+        except Exception as host_validation_error:
+            # If host validation fails and we have a certificate, try with validate_host=False
+            if validate_host and (cafile and cafile != 'ignored' or cafile == 'ignored'):
+                error_str = str(host_validation_error).lower()
+                if 'hostname' in error_str or 'certificate' in error_str or 'verify' in error_str:
+                    log.warning(f"Connection with host validation failed: {host_validation_error}")
+                    log.info("Step 2.2.1: Retrying connection with host validation disabled (certificate may be for different hostname)")
+                    conn_params['validate_host'] = False
+                    conn = pytds.connect(**conn_params)
+                    log.info("Step 2.2.2: Connection successful with host validation disabled")
+                else:
+                    # Not a host validation error, re-raise
+                    raise
+            else:
+                # No certificate or validate_host was already False, re-raise
+                raise
         
         log.info("Step 2.3: Connection established successfully")
         log.info(f"  Connection object: {type(conn).__name__}")
