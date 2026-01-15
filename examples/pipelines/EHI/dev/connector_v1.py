@@ -476,7 +476,7 @@ def obfuscate_cert(cert_content: str) -> str:
     return f"{len(cert_blocks)} certificate(s): " + ", ".join(obfuscated)
 
 def diagnose_network_connectivity(host: str, port: int, timeout: int = 5) -> Dict[str, Any]:
-    """Diagnose network connectivity issues for privatelink connections.
+    """Diagnose network connectivity issues for Azure Private Link connections.
     
     Returns a dictionary with diagnostic information including:
     - DNS resolution status
@@ -493,30 +493,49 @@ def diagnose_network_connectivity(host: str, port: int, timeout: int = 5) -> Dic
         'errors': []
     }
     
+    # Check if this looks like an Azure hostname
+    is_azure_host = '.database.windows.net' in host or '.privatelink.database.windows.net' in host
+    
     try:
-        log.info(f"Network Diagnostic: Resolving DNS for {host}")
+        log.info(f"Azure Network Diagnostic: Resolving DNS for {host}")
         # Resolve hostname to IP addresses
         try:
             ip_addresses = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
             resolved_ips = list(set([addr[4][0] for addr in ip_addresses]))
             diagnostics['ip_addresses'] = resolved_ips
             diagnostics['dns_resolved'] = True
-            log.info(f"Network Diagnostic: DNS resolved successfully - {len(resolved_ips)} IP(s): {', '.join(resolved_ips)}")
+            log.info(f"Azure Network Diagnostic: DNS resolved successfully - {len(resolved_ips)} IP(s): {', '.join(resolved_ips)}")
+            
+            # Check if resolved IP is in Azure Private IP range (10.x.x.x, 172.16-31.x.x, 192.168.x.x)
+            if resolved_ips:
+                first_ip = resolved_ips[0]
+                ip_parts = first_ip.split('.')
+                is_private_ip = (
+                    (ip_parts[0] == '10') or
+                    (ip_parts[0] == '172' and 16 <= int(ip_parts[1]) <= 31) or
+                    (ip_parts[0] == '192' and ip_parts[1] == '168')
+                )
+                if is_private_ip and is_azure_host:
+                    log.info(f"Azure Network Diagnostic: Resolved to private IP {first_ip} (Azure Private Link endpoint)")
+                elif is_azure_host:
+                    log.warning(f"Azure Network Diagnostic: Resolved to public IP {first_ip} (may not be Private Link)")
         except socket.gaierror as e:
             diagnostics['errors'].append(f"DNS resolution failed: {e}")
-            log.severe(f"Network Diagnostic: DNS resolution FAILED for {host}: {e}")
+            log.severe(f"Azure Network Diagnostic: DNS resolution FAILED for {host}: {e}")
             log.severe(f"  This indicates the hostname cannot be resolved. Check:")
-            log.severe(f"  - Is the privatelink hostname correct?")
-            log.severe(f"  - Is DNS configured correctly in your network?")
-            log.severe(f"  - Are you connected to the required VPN/network?")
+            log.severe(f"  - Is the Azure Private Link hostname correct?")
+            if is_azure_host:
+                log.severe(f"  - Is Azure Private DNS Zone configured correctly?")
+                log.severe(f"  - Is the Private DNS Zone linked to your VNet?")
+            log.severe(f"  - Are you connected to the required VPN or in the correct VNet?")
             return diagnostics
         except Exception as e:
             diagnostics['errors'].append(f"DNS resolution error: {e}")
-            log.severe(f"Network Diagnostic: DNS resolution error: {e}")
+            log.severe(f"Azure Network Diagnostic: DNS resolution error: {e}")
             return diagnostics
         
         # Test port connectivity
-        log.info(f"Network Diagnostic: Testing port connectivity to {host}:{port}")
+        log.info(f"Azure Network Diagnostic: Testing port connectivity to {host}:{port}")
         for ip in resolved_ips[:3]:  # Test first 3 IPs
             try:
                 test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -526,57 +545,83 @@ def diagnose_network_connectivity(host: str, port: int, timeout: int = 5) -> Dic
                 
                 if result == 0:
                     diagnostics['port_reachable'] = True
-                    log.info(f"Network Diagnostic: Port {port} is REACHABLE on {ip}")
+                    log.info(f"Azure Network Diagnostic: Port {port} is REACHABLE on {ip}")
                     break
                 else:
-                    log.warning(f"Network Diagnostic: Port {port} is NOT reachable on {ip} (error code: {result})")
+                    log.warning(f"Azure Network Diagnostic: Port {port} is NOT reachable on {ip} (error code: {result})")
                     diagnostics['errors'].append(f"Port {port} unreachable on {ip}: error code {result}")
             except socket.timeout:
-                log.warning(f"Network Diagnostic: Connection to {ip}:{port} timed out")
+                log.warning(f"Azure Network Diagnostic: Connection to {ip}:{port} timed out")
                 diagnostics['errors'].append(f"Connection timeout to {ip}:{port}")
             except ConnectionRefusedError:
-                log.warning(f"Network Diagnostic: Connection REFUSED to {ip}:{port}")
+                log.warning(f"Azure Network Diagnostic: Connection REFUSED to {ip}:{port}")
                 diagnostics['errors'].append(f"Connection refused to {ip}:{port}")
             except Exception as e:
-                log.warning(f"Network Diagnostic: Error testing {ip}:{port}: {e}")
+                log.warning(f"Azure Network Diagnostic: Error testing {ip}:{port}: {e}")
                 diagnostics['errors'].append(f"Error testing {ip}:{port}: {e}")
         
         if not diagnostics['port_reachable']:
             log.severe("=" * 80)
-            log.severe("NETWORK CONNECTIVITY DIAGNOSTIC FAILED")
+            log.severe("AZURE PRIVATE LINK CONNECTIVITY DIAGNOSTIC FAILED")
             log.severe("=" * 80)
-            log.severe(f"Host: {host}")
+            log.severe(f"Azure SQL Server (Private Link): {host}")
             log.severe(f"Port: {port}")
-            log.severe(f"Resolved IPs: {', '.join(resolved_ips) if resolved_ips else 'None'}")
+            log.severe(f"Resolved Private Endpoint IPs: {', '.join(resolved_ips) if resolved_ips else 'None'}")
             log.severe("")
-            log.severe("POSSIBLE CAUSES:")
-            log.severe("1. Privatelink endpoint is not reachable from this network")
-            log.severe("   - Privatelink endpoints are only accessible from specific networks")
-            log.severe("   - You may need to be on a VPN or in a peered VPC/VNet")
-            log.severe("2. Firewall/Security Group blocking the connection")
-            log.severe("   - Check if port {port} is allowed in security groups")
-            log.severe("   - Verify network ACLs allow traffic to privatelink IPs")
-            log.severe("3. Wrong hostname or port")
-            log.severe("   - Verify the privatelink hostname is correct")
-            log.severe("   - Confirm the port (typically 1433 for data, 1434 for cert)")
-            log.severe("4. Network routing issue")
-            log.severe("   - Privatelink requires proper network routing configuration")
-            log.severe("   - Check route tables and network peering configuration")
+            log.severe("AZURE-SPECIFIC POSSIBLE CAUSES:")
+            log.severe("1. VNet/Subnet Configuration:")
+            log.severe("   - Private Endpoint is not reachable from your current VNet")
+            log.severe("   - VNet peering may not be configured correctly")
+            log.severe("   - You may need to be in the same VNet or a peered VNet")
+            log.severe("   - VPN/ExpressRoute connection may be required")
             log.severe("")
-            log.severe("TROUBLESHOOTING STEPS:")
-            log.severe("1. Test connectivity from a machine that works:")
+            log.severe("2. Azure Private DNS Zone:")
+            if is_azure_host:
+                log.severe("   - Private DNS Zone may not be linked to your VNet")
+                log.severe("   - DNS resolution may be pointing to public endpoint instead of private")
+                log.severe("   - Check: az network private-dns zone list --resource-group <rg>")
+                log.severe("   - Verify: az network private-dns link vnet list --zone-name <zone>")
+            log.severe("")
+            log.severe("3. Network Security Groups (NSGs):")
+            log.severe(f"   - Outbound rules may be blocking port {port}")
+            log.severe("   - NSG rules must allow outbound traffic to Private Endpoint IPs")
+            log.severe("   - Check NSG rules on your subnet/VNet")
+            log.severe("")
+            log.severe("4. Azure Firewall / Route Tables:")
+            log.severe("   - Azure Firewall may be blocking the connection")
+            log.severe("   - User-Defined Routes (UDRs) may be misconfigured")
+            log.severe("   - Check route table associated with your subnet")
+            log.severe("")
+            log.severe("5. Private Endpoint Status:")
+            log.severe("   - Verify Private Endpoint is provisioned and approved")
+            log.severe("   - Check: az network private-endpoint show --name <pe-name> --resource-group <rg>")
+            log.severe("   - Ensure connection state is 'Approved'")
+            log.severe("")
+            log.severe("AZURE TROUBLESHOOTING STEPS:")
+            log.severe("1. Verify Private Endpoint configuration:")
+            log.severe("   az network private-endpoint show --name <pe-name> --resource-group <rg>")
+            log.severe("   az network private-endpoint-connection list --id <pe-id>")
+            log.severe("")
+            log.severe("2. Check VNet peering (if using different VNet):")
+            log.severe("   az network vnet peering list --resource-group <rg> --vnet-name <vnet>")
+            log.severe("")
+            log.severe("3. Verify Private DNS Zone linkage:")
+            log.severe("   az network private-dns link vnet list --zone-name privatelink.database.windows.net")
+            log.severe("")
+            log.severe("4. Test connectivity from Azure VM in same VNet:")
             log.severe(f"   telnet {host} {port}")
-            log.severe(f"   nc -zv {host} {port}")
-            log.severe("2. Verify you can connect using the regular (non-privatelink) hostname")
-            log.severe("3. Check if you're on the required VPN or network")
-            log.severe("4. Verify security group rules allow outbound traffic to privatelink IPs")
+            log.severe(f"   Test-NetConnection -ComputerName {host} -Port {port}  # PowerShell")
+            log.severe("")
+            log.severe("5. Compare with public endpoint (if accessible):")
+            log.severe("   - Try connecting to the public hostname (without .privatelink)")
+            log.severe("   - If public works but private doesn't, it's a Private Link networking issue")
             log.severe("=" * 80)
         else:
-            log.info("Network Diagnostic: Connectivity test PASSED")
+            log.info("Azure Network Diagnostic: Connectivity test PASSED")
         
     except Exception as e:
         diagnostics['errors'].append(f"Diagnostic error: {e}")
-        log.severe(f"Network Diagnostic: Unexpected error: {e}")
+        log.severe(f"Azure Network Diagnostic: Unexpected error: {e}")
     
     return diagnostics
 
@@ -591,7 +636,7 @@ def generate_cert_chain(server: str, port: int) -> str:
     log.info("CERTIFICATE GENERATION PROCESS - Step 1: Connect to Certificate Server")
     log.info("=" * 80)
     log.info(f"Certificate Server: {server}")
-    log.info(f"Certificate Server Port: {port} (expected: 1434 for privatelink)")
+    log.info(f"Certificate Server Port: {port} (expected: 1434 for Azure Private Link)")
     
     try:
         log.info(f"Step 1.1: Executing OpenSSL s_client to retrieve certificates from {server}:{port}")
@@ -672,12 +717,15 @@ def generate_cert_chain(server: str, port: int) -> str:
 
 
 def connect_to_mssql(configuration: dict):
-    """Connects to MSSQL using TDS with SSL cert chain.
+    """Connects to Azure SQL Database using TDS with SSL cert chain.
     
-    Authentication Flow for Privatelink:
+    Authentication Flow for Azure Private Link:
     1. Connect to MSSQL_CERT_SERVER (port 1434) to retrieve/generate certificate
     2. Use certificate with cdw_cert configuration for authentication
     3. Connect to MSSQL_SERVER (port 1433) for data replication
+    
+    Note: Azure Private Link requires proper VNet configuration, Private DNS Zone linkage,
+    and network security group rules to allow connectivity to the Private Endpoint.
     """
     log.info("=" * 80)
     log.info("MSSQL AUTHENTICATION PROCESS - Initialization")
@@ -724,9 +772,9 @@ def connect_to_mssql(configuration: dict):
     # Log configuration (obfuscated)
     log.info(f"Step 0.4: Configuration summary (sensitive data obfuscated):")
     log.info(f"  Data Server (MSSQL_SERVER): {server}")
-    log.info(f"  Data Server Port: {data_port} (expected: 1433 for privatelink)")
+    log.info(f"  Data Server Port: {data_port} (expected: 1433 for Azure Private Link)")
     log.info(f"  Certificate Server (MSSQL_CERT_SERVER): {cert_server}")
-    log.info(f"  Certificate Server Port: {cert_port} (expected: 1434 for privatelink)")
+    log.info(f"  Certificate Server Port: {cert_port} (expected: 1434 for Azure Private Link)")
     log.info(f"  Database: {database}")
     log.info(f"  User: {obfuscate_sensitive(user)}")
     log.info(f"  CDW Cert provided: {'Yes' if cafile_cfg else 'No'}")
@@ -832,9 +880,9 @@ def connect_to_mssql(configuration: dict):
     log.info("=" * 80)
     log.info("MSSQL AUTHENTICATION PROCESS - Database Connection")
     log.info("=" * 80)
-    log.info(f"Step 2.1: Preparing connection to data server")
+    log.info(f"Step 2.1: Preparing connection to Azure SQL Database")
     log.info(f"  Server: {server}")
-    log.info(f"  Port: {data_port} (expected: 1433 for privatelink)")
+    log.info(f"  Port: {data_port} (expected: 1433 for Azure Private Link)")
     log.info(f"  Database: {database}")
     log.info(f"  User: {obfuscate_sensitive(user)}")
     if cafile and cafile != 'ignored':
@@ -845,8 +893,8 @@ def connect_to_mssql(configuration: dict):
         log.info(f"  Certificate: None (no certificate validation)")
     
     # Determine validate_host setting
-    # For privatelink: certificate may be issued for different hostname, so default to False
-    # But allow configuration override for cases where certificate matches privatelink hostname
+    # For Azure Private Link: certificate may be issued for different hostname, so default to False
+    # But allow configuration override for cases where certificate matches Private Link hostname
     # If certificate is provided, we'll try True first for better security, then fall back to False
     validate_host_config = configuration.get("validate_host", None)
     if validate_host_config is not None:
@@ -856,10 +904,10 @@ def connect_to_mssql(configuration: dict):
             validate_host = bool(validate_host_config)
         log.info(f"  Host validation: {'Enabled' if validate_host else 'Disabled'} (from configuration)")
     else:
-        # Default: False for privatelink (certificate often issued for different hostname)
+        # Default: False for Azure Private Link (certificate often issued for different hostname)
         # But if certificate is provided, try True first for better security
         validate_host = False
-        log.info(f"  Host validation: Disabled (default for privatelink - certificate may be for different hostname)")
+        log.info(f"  Host validation: Disabled (default for Azure Private Link - certificate may be for different hostname)")
     
     # Run network diagnostics before attempting connection
     log.info("Step 2.1.5: Running network connectivity diagnostics")
@@ -963,48 +1011,72 @@ def connect_to_mssql(configuration: dict):
         log.severe("This means certificates are NOT the issue - the connection is being refused")
         log.severe("at the TCP socket level, likely due to network connectivity problems.")
         log.severe("")
-        log.severe("ROOT CAUSE ANALYSIS:")
-        log.severe("1. Network Reachability:")
-        log.severe(f"   - Privatelink host '{server}' may not be reachable from this network")
-        log.severe("   - Privatelink endpoints are only accessible from specific networks")
-        log.severe("   - You may need VPN access or be in a peered VPC/VNet")
+        log.severe("AZURE PRIVATE LINK ROOT CAUSE ANALYSIS:")
+        log.severe("1. Azure VNet/Subnet Configuration:")
+        log.severe(f"   - Azure Private Endpoint for '{server}' may not be reachable from your VNet")
+        log.severe("   - Private Endpoints are only accessible from the same VNet or peered VNets")
+        log.severe("   - VPN Gateway or ExpressRoute connection may be required")
+        log.severe("   - Verify VNet peering is configured if using different VNet")
         log.severe("")
-        log.severe("2. Firewall/Security Groups:")
-        log.severe(f"   - Port {data_port} may be blocked by firewall rules")
-        log.severe("   - Security groups may not allow outbound traffic to privatelink IPs")
-        log.severe("   - Network ACLs may be blocking the connection")
+        log.severe("2. Azure Private DNS Zone:")
+        is_azure_host = '.database.windows.net' in server
+        if is_azure_host:
+            log.severe("   - Private DNS Zone (privatelink.database.windows.net) may not be linked to your VNet")
+            log.severe("   - DNS may be resolving to public endpoint instead of Private Endpoint")
+            log.severe("   - Check: az network private-dns link vnet list --zone-name privatelink.database.windows.net")
         log.severe("")
-        log.severe("3. DNS Resolution:")
+        log.severe("3. Network Security Groups (NSGs):")
+        log.severe(f"   - NSG rules may be blocking outbound traffic on port {data_port}")
+        log.severe("   - NSG must allow outbound TCP to Private Endpoint IPs")
+        log.severe("   - Check NSG rules on your subnet: az network nsg rule list --nsg-name <nsg>")
+        log.severe("")
+        log.severe("4. Azure Firewall / Route Tables:")
+        log.severe("   - Azure Firewall may be blocking the connection")
+        log.severe("   - User-Defined Routes (UDRs) may be misconfigured")
+        log.severe("   - Check route table: az network route-table route list --resource-group <rg> --route-table-name <rt>")
+        log.severe("")
+        log.severe("5. Private Endpoint Status:")
+        log.severe("   - Private Endpoint may not be provisioned or approved")
+        log.severe("   - Check connection state: az network private-endpoint-connection list --id <pe-id>")
+        log.severe("")
+        log.severe("6. DNS Resolution:")
         try:
             if 'network_diagnostics' in locals() and network_diagnostics.get('dns_resolved', False):
-                log.severe(f"   - DNS resolved successfully to: {', '.join(network_diagnostics.get('ip_addresses', []))}")
+                resolved_ips = network_diagnostics.get('ip_addresses', [])
+                log.severe(f"   - DNS resolved to: {', '.join(resolved_ips)}")
+                if resolved_ips:
+                    first_ip = resolved_ips[0]
+                    ip_parts = first_ip.split('.')
+                    is_private = (ip_parts[0] == '10' or 
+                                 (ip_parts[0] == '172' and 16 <= int(ip_parts[1]) <= 31) or
+                                 (ip_parts[0] == '192' and ip_parts[1] == '168'))
+                    if is_private:
+                        log.severe(f"   - Resolved to private IP (Private Endpoint): {first_ip}")
+                    else:
+                        log.severe(f"   - WARNING: Resolved to public IP {first_ip} (may not be Private Link)")
             else:
                 log.severe("   - DNS resolution may have failed (check diagnostic logs above)")
         except:
             log.severe("   - DNS resolution status unknown (diagnostics not available)")
         log.severe("")
-        log.severe("4. Configuration Issues:")
-        log.severe(f"   - Verify privatelink hostname is correct: {server}")
-        log.severe(f"   - Verify port is correct: {data_port} (typically 1433 for data server)")
+        log.severe("AZURE TROUBLESHOOTING STEPS:")
+        log.severe("1. Verify Private Endpoint configuration:")
+        log.severe("   az network private-endpoint show --name <pe-name> --resource-group <rg>")
+        log.severe("   az network private-endpoint-connection list --id <pe-id>")
         log.severe("")
-        log.severe("TROUBLESHOOTING STEPS:")
-        log.severe("1. Test from a machine that works:")
+        log.severe("2. Test from Azure VM in same VNet:")
         log.severe(f"   telnet {server} {data_port}")
-        log.severe(f"   nc -zv {server} {data_port}")
-        log.severe(f"   python -c \"import socket; s=socket.socket(); s.settimeout(5); s.connect(('{server}', {data_port})); print('OK')\"")
+        log.severe(f"   Test-NetConnection -ComputerName {server} -Port {data_port}  # PowerShell")
         log.severe("")
-        log.severe("2. Verify network connectivity:")
-        log.severe("   - Are you on the required VPN?")
-        log.severe("   - Is your network peered with the privatelink VPC/VNet?")
-        log.severe("   - Can you ping/resolve the privatelink hostname?")
+        log.severe("3. Check VNet peering (if using different VNet):")
+        log.severe("   az network vnet peering list --resource-group <rg> --vnet-name <vnet>")
         log.severe("")
-        log.severe("3. Check security groups and firewall rules:")
-        log.severe(f"   - Allow outbound TCP traffic to port {data_port}")
-        log.severe("   - Verify network ACLs allow traffic to privatelink IP ranges")
+        log.severe("4. Verify Private DNS Zone linkage:")
+        log.severe("   az network private-dns link vnet list --zone-name privatelink.database.windows.net")
         log.severe("")
-        log.severe("4. Compare with working configuration:")
-        log.severe("   - Does the regular (non-privatelink) hostname work?")
-        log.severe("   - If yes, the issue is specifically with privatelink network access")
+        log.severe("5. Compare with public endpoint:")
+        log.severe("   - Try connecting to public hostname (without .privatelink)")
+        log.severe("   - If public works but private doesn't, it's a Private Link networking issue")
         log.severe("=" * 80)
         raise RuntimeError(f"Unexpected error during MSSQL connection: {e}")
     except Exception as e:
@@ -1027,22 +1099,30 @@ def connect_to_mssql(configuration: dict):
             is_network_error = True
         
         if is_network_error:
+            is_azure_host = '.database.windows.net' in server
             log.severe("")
             log.severe("=" * 80)
-            log.severe("NETWORK CONNECTIVITY ERROR DETECTED")
+            log.severe("AZURE PRIVATE LINK NETWORK CONNECTIVITY ERROR DETECTED")
             log.severe("=" * 80)
             log.severe("This error indicates a network-level connectivity problem.")
             log.severe("The connection is failing BEFORE SSL/TLS negotiation, which means:")
             log.severe("  - Certificates are NOT the issue")
             log.severe("  - Authentication is NOT the issue")
-            log.severe("  - The problem is network reachability to the privatelink endpoint")
+            log.severe("  - The problem is Azure Private Link network reachability")
             log.severe("")
-            log.severe("TROUBLESHOOTING:")
-            log.severe(f"1. Verify privatelink host '{server}' is reachable from this network")
-            log.severe("2. Check if you're on the required VPN or in the correct VPC/VNet")
-            log.severe(f"3. Test connectivity: telnet {server} {data_port}")
-            log.severe("4. Verify firewall/security group rules allow outbound traffic")
-            log.severe("5. Compare with working non-privatelink hostname")
+            log.severe("AZURE-SPECIFIC TROUBLESHOOTING:")
+            log.severe(f"1. Verify Azure Private Endpoint for '{server}' is reachable from your VNet")
+            log.severe("2. Check VNet peering or VPN/ExpressRoute connectivity")
+            log.severe("3. Verify Azure Private DNS Zone is linked to your VNet")
+            log.severe("4. Check NSG rules allow outbound traffic to Private Endpoint")
+            log.severe(f"5. Test from Azure VM: telnet {server} {data_port}")
+            log.severe("6. Compare with public endpoint (if accessible)")
+            if is_azure_host:
+                log.severe("")
+                log.severe("Azure CLI Commands:")
+                log.severe("  az network private-endpoint show --name <pe-name> --resource-group <rg>")
+                log.severe("  az network private-dns link vnet list --zone-name privatelink.database.windows.net")
+                log.severe("  az network nsg rule list --nsg-name <nsg> --resource-group <rg>")
             log.severe("=" * 80)
         
         raise RuntimeError(f"Unexpected error during MSSQL connection: {e}")
