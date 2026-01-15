@@ -679,7 +679,7 @@ def connect_to_mssql(configuration: dict):
                 
                 log.info("Step 1.9: Configuring pytds TLS context factory")
                 pytds.tls.create_context = lambda cafile: ctx
-                cafile = None  # Set to None since SSL context is configured via pytds.tls.create_context
+                cafile = 'ignored'  # Signal to pytds that custom SSL context is configured via pytds.tls.create_context
                 
                 log.info("Step 1.10: SSL context configured successfully (using PEM string)")
                 
@@ -730,10 +730,12 @@ def connect_to_mssql(configuration: dict):
     log.info(f"  Port: {data_port} (expected: 1433 for privatelink)")
     log.info(f"  Database: {database}")
     log.info(f"  User: {obfuscate_sensitive(user)}")
-    if cafile:
+    if cafile and cafile != 'ignored':
         log.info(f"  Certificate file: {cafile}")
-    else:
+    elif cafile == 'ignored':
         log.info(f"  Certificate: SSL Context (configured via pytds.tls.create_context)")
+    else:
+        log.info(f"  Certificate: None (no certificate validation)")
     log.info(f"  Host validation: Disabled (validate_host=False)")
     
     try:
@@ -742,17 +744,28 @@ def connect_to_mssql(configuration: dict):
         log.info(f"    - Server: {server}:{data_port}")
         log.info(f"    - Database: {database}")
         log.info(f"    - User: {obfuscate_sensitive(user)}")
-        log.info(f"    - Certificate: {'File path' if cafile else 'SSL Context (PEM)'}")
+        if cafile and cafile != 'ignored':
+            log.info(f"    - Certificate: File path ({cafile})")
+        elif cafile == 'ignored':
+            log.info(f"    - Certificate: SSL Context (PEM, custom context)")
+        else:
+            log.info(f"    - Certificate: None")
         
-        conn = pytds.connect(
-            server=server,
-            database=database,
-            user=user,
-            password=password,
-            port=int(data_port),
-            cafile=cafile,
-            validate_host=False
-        )
+        # Build connection parameters - only include cafile if it's not 'ignored'
+        conn_params = {
+            'server': server,
+            'database': database,
+            'user': user,
+            'password': password,
+            'port': int(data_port),
+            'validate_host': False
+        }
+        
+        # Only add cafile if it's a valid file path (not 'ignored' or None)
+        if cafile and cafile != 'ignored':
+            conn_params['cafile'] = cafile
+        
+        conn = pytds.connect(**conn_params)
         
         log.info("Step 2.3: Connection established successfully")
         log.info(f"  Connection object: {type(conn).__name__}")
