@@ -21,6 +21,7 @@ from typing import Dict, List, Any, Optional, Tuple
 import signal
 import sys
 import pytds
+import socket
 
 # Try to import psutil for resource monitoring, fallback gracefully if not available
 try:
@@ -474,6 +475,112 @@ def obfuscate_cert(cert_content: str) -> str:
     
     return f"{len(cert_blocks)} certificate(s): " + ", ".join(obfuscated)
 
+def diagnose_network_connectivity(host: str, port: int, timeout: int = 5) -> Dict[str, Any]:
+    """Diagnose network connectivity issues for privatelink connections.
+    
+    Returns a dictionary with diagnostic information including:
+    - DNS resolution status
+    - Port connectivity test
+    - Resolved IP addresses
+    - Error details if connection fails
+    """
+    diagnostics = {
+        'host': host,
+        'port': port,
+        'dns_resolved': False,
+        'ip_addresses': [],
+        'port_reachable': False,
+        'errors': []
+    }
+    
+    try:
+        log.info(f"Network Diagnostic: Resolving DNS for {host}")
+        # Resolve hostname to IP addresses
+        try:
+            ip_addresses = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            resolved_ips = list(set([addr[4][0] for addr in ip_addresses]))
+            diagnostics['ip_addresses'] = resolved_ips
+            diagnostics['dns_resolved'] = True
+            log.info(f"Network Diagnostic: DNS resolved successfully - {len(resolved_ips)} IP(s): {', '.join(resolved_ips)}")
+        except socket.gaierror as e:
+            diagnostics['errors'].append(f"DNS resolution failed: {e}")
+            log.severe(f"Network Diagnostic: DNS resolution FAILED for {host}: {e}")
+            log.severe(f"  This indicates the hostname cannot be resolved. Check:")
+            log.severe(f"  - Is the privatelink hostname correct?")
+            log.severe(f"  - Is DNS configured correctly in your network?")
+            log.severe(f"  - Are you connected to the required VPN/network?")
+            return diagnostics
+        except Exception as e:
+            diagnostics['errors'].append(f"DNS resolution error: {e}")
+            log.severe(f"Network Diagnostic: DNS resolution error: {e}")
+            return diagnostics
+        
+        # Test port connectivity
+        log.info(f"Network Diagnostic: Testing port connectivity to {host}:{port}")
+        for ip in resolved_ips[:3]:  # Test first 3 IPs
+            try:
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                test_socket.settimeout(timeout)
+                result = test_socket.connect_ex((ip, port))
+                test_socket.close()
+                
+                if result == 0:
+                    diagnostics['port_reachable'] = True
+                    log.info(f"Network Diagnostic: Port {port} is REACHABLE on {ip}")
+                    break
+                else:
+                    log.warning(f"Network Diagnostic: Port {port} is NOT reachable on {ip} (error code: {result})")
+                    diagnostics['errors'].append(f"Port {port} unreachable on {ip}: error code {result}")
+            except socket.timeout:
+                log.warning(f"Network Diagnostic: Connection to {ip}:{port} timed out")
+                diagnostics['errors'].append(f"Connection timeout to {ip}:{port}")
+            except ConnectionRefusedError:
+                log.warning(f"Network Diagnostic: Connection REFUSED to {ip}:{port}")
+                diagnostics['errors'].append(f"Connection refused to {ip}:{port}")
+            except Exception as e:
+                log.warning(f"Network Diagnostic: Error testing {ip}:{port}: {e}")
+                diagnostics['errors'].append(f"Error testing {ip}:{port}: {e}")
+        
+        if not diagnostics['port_reachable']:
+            log.severe("=" * 80)
+            log.severe("NETWORK CONNECTIVITY DIAGNOSTIC FAILED")
+            log.severe("=" * 80)
+            log.severe(f"Host: {host}")
+            log.severe(f"Port: {port}")
+            log.severe(f"Resolved IPs: {', '.join(resolved_ips) if resolved_ips else 'None'}")
+            log.severe("")
+            log.severe("POSSIBLE CAUSES:")
+            log.severe("1. Privatelink endpoint is not reachable from this network")
+            log.severe("   - Privatelink endpoints are only accessible from specific networks")
+            log.severe("   - You may need to be on a VPN or in a peered VPC/VNet")
+            log.severe("2. Firewall/Security Group blocking the connection")
+            log.severe("   - Check if port {port} is allowed in security groups")
+            log.severe("   - Verify network ACLs allow traffic to privatelink IPs")
+            log.severe("3. Wrong hostname or port")
+            log.severe("   - Verify the privatelink hostname is correct")
+            log.severe("   - Confirm the port (typically 1433 for data, 1434 for cert)")
+            log.severe("4. Network routing issue")
+            log.severe("   - Privatelink requires proper network routing configuration")
+            log.severe("   - Check route tables and network peering configuration")
+            log.severe("")
+            log.severe("TROUBLESHOOTING STEPS:")
+            log.severe("1. Test connectivity from a machine that works:")
+            log.severe(f"   telnet {host} {port}")
+            log.severe(f"   nc -zv {host} {port}")
+            log.severe("2. Verify you can connect using the regular (non-privatelink) hostname")
+            log.severe("3. Check if you're on the required VPN or network")
+            log.severe("4. Verify security group rules allow outbound traffic to privatelink IPs")
+            log.severe("=" * 80)
+        else:
+            log.info("Network Diagnostic: Connectivity test PASSED")
+        
+    except Exception as e:
+        diagnostics['errors'].append(f"Diagnostic error: {e}")
+        log.severe(f"Network Diagnostic: Unexpected error: {e}")
+    
+    return diagnostics
+
+
 def generate_cert_chain(server: str, port: int) -> str:
     """Generates a certificate chain file by fetching intermediate and root certificates.
     
@@ -754,6 +861,16 @@ def connect_to_mssql(configuration: dict):
         validate_host = False
         log.info(f"  Host validation: Disabled (default for privatelink - certificate may be for different hostname)")
     
+    # Run network diagnostics before attempting connection
+    log.info("Step 2.1.5: Running network connectivity diagnostics")
+    network_diagnostics = diagnose_network_connectivity(server, int(data_port), timeout=10)
+    
+    # If diagnostics show connectivity issues, provide detailed error but still attempt connection
+    # (in case diagnostics are overly conservative)
+    if not network_diagnostics.get('port_reachable', False):
+        log.warning("Network diagnostics indicate connectivity issues, but attempting connection anyway...")
+        log.warning("If connection fails, refer to the diagnostic information above for troubleshooting")
+    
     try:
         log.info("Step 2.2: Establishing TDS connection with SSL/TLS")
         log.info(f"  Connection parameters:")
@@ -782,26 +899,8 @@ def connect_to_mssql(configuration: dict):
         if cafile and cafile != 'ignored':
             conn_params['cafile'] = cafile
         
-        # Try connection with configured validate_host setting
-        # If validate_host=True fails and we have a certificate, try False as fallback
-        try:
-            conn = pytds.connect(**conn_params)
-        except Exception as host_validation_error:
-            # If host validation fails and we have a certificate, try with validate_host=False
-            if validate_host and (cafile and cafile != 'ignored' or cafile == 'ignored'):
-                error_str = str(host_validation_error).lower()
-                if 'hostname' in error_str or 'certificate' in error_str or 'verify' in error_str:
-                    log.warning(f"Connection with host validation failed: {host_validation_error}")
-                    log.info("Step 2.2.1: Retrying connection with host validation disabled (certificate may be for different hostname)")
-                    conn_params['validate_host'] = False
-                    conn = pytds.connect(**conn_params)
-                    log.info("Step 2.2.2: Connection successful with host validation disabled")
-                else:
-                    # Not a host validation error, re-raise
-                    raise
-            else:
-                # No certificate or validate_host was already False, re-raise
-                raise
+        # Single connection attempt with configured validate_host setting
+        conn = pytds.connect(**conn_params)
         
         log.info("Step 2.3: Connection established successfully")
         log.info(f"  Connection object: {type(conn).__name__}")
@@ -831,10 +930,121 @@ def connect_to_mssql(configuration: dict):
         log.severe(f"  Server: {server}:{data_port}")
         log.severe(f"  Database: {database}")
         log.severe(f"  User: {obfuscate_sensitive(user)}")
+        
+        # Check if this is a wrapped network error
+        if hasattr(e, '__cause__') and e.__cause__:
+            if isinstance(e.__cause__, (ConnectionRefusedError, TimeoutError)) or 'Connection refused' in str(e.__cause__):
+                log.severe("")
+                log.severe("NOTE: This TDS error is caused by a network connectivity issue.")
+                log.severe("The connection is being refused at the network level, not due to authentication or certificates.")
+                log.severe("See network diagnostics above for troubleshooting steps.")
+        
         raise RuntimeError(f"Failed to connect to MSSQL server: {e}")
+    except (ConnectionRefusedError, TimeoutError) as e:
+        # Enhanced error reporting for network connectivity issues
+        # Check if this is a wrapped ConnectionRefusedError (pytds wraps it as TimeoutError)
+        is_connection_refused = isinstance(e, ConnectionRefusedError)
+        if isinstance(e, TimeoutError) and hasattr(e, '__cause__'):
+            is_connection_refused = isinstance(e.__cause__, ConnectionRefusedError) or 'Connection refused' in str(e.__cause__)
+        
+        log.severe("=" * 80)
+        if is_connection_refused:
+            log.severe("CONNECTION REFUSED ERROR")
+        else:
+            log.severe("CONNECTION TIMEOUT ERROR")
+        log.severe("=" * 80)
+        log.severe(f"Error Type: {type(e).__name__}")
+        log.severe(f"Error Message: {e}")
+        if hasattr(e, '__cause__') and e.__cause__:
+            log.severe(f"Root Cause: {type(e.__cause__).__name__}: {e.__cause__}")
+        log.severe(f"Target: {server}:{data_port}")
+        log.severe("")
+        log.severe("This error occurs at the NETWORK level, BEFORE SSL/TLS negotiation.")
+        log.severe("This means certificates are NOT the issue - the connection is being refused")
+        log.severe("at the TCP socket level, likely due to network connectivity problems.")
+        log.severe("")
+        log.severe("ROOT CAUSE ANALYSIS:")
+        log.severe("1. Network Reachability:")
+        log.severe(f"   - Privatelink host '{server}' may not be reachable from this network")
+        log.severe("   - Privatelink endpoints are only accessible from specific networks")
+        log.severe("   - You may need VPN access or be in a peered VPC/VNet")
+        log.severe("")
+        log.severe("2. Firewall/Security Groups:")
+        log.severe(f"   - Port {data_port} may be blocked by firewall rules")
+        log.severe("   - Security groups may not allow outbound traffic to privatelink IPs")
+        log.severe("   - Network ACLs may be blocking the connection")
+        log.severe("")
+        log.severe("3. DNS Resolution:")
+        try:
+            if 'network_diagnostics' in locals() and network_diagnostics.get('dns_resolved', False):
+                log.severe(f"   - DNS resolved successfully to: {', '.join(network_diagnostics.get('ip_addresses', []))}")
+            else:
+                log.severe("   - DNS resolution may have failed (check diagnostic logs above)")
+        except:
+            log.severe("   - DNS resolution status unknown (diagnostics not available)")
+        log.severe("")
+        log.severe("4. Configuration Issues:")
+        log.severe(f"   - Verify privatelink hostname is correct: {server}")
+        log.severe(f"   - Verify port is correct: {data_port} (typically 1433 for data server)")
+        log.severe("")
+        log.severe("TROUBLESHOOTING STEPS:")
+        log.severe("1. Test from a machine that works:")
+        log.severe(f"   telnet {server} {data_port}")
+        log.severe(f"   nc -zv {server} {data_port}")
+        log.severe(f"   python -c \"import socket; s=socket.socket(); s.settimeout(5); s.connect(('{server}', {data_port})); print('OK')\"")
+        log.severe("")
+        log.severe("2. Verify network connectivity:")
+        log.severe("   - Are you on the required VPN?")
+        log.severe("   - Is your network peered with the privatelink VPC/VNet?")
+        log.severe("   - Can you ping/resolve the privatelink hostname?")
+        log.severe("")
+        log.severe("3. Check security groups and firewall rules:")
+        log.severe(f"   - Allow outbound TCP traffic to port {data_port}")
+        log.severe("   - Verify network ACLs allow traffic to privatelink IP ranges")
+        log.severe("")
+        log.severe("4. Compare with working configuration:")
+        log.severe("   - Does the regular (non-privatelink) hostname work?")
+        log.severe("   - If yes, the issue is specifically with privatelink network access")
+        log.severe("=" * 80)
+        raise RuntimeError(f"Unexpected error during MSSQL connection: {e}")
     except Exception as e:
         log.severe(f"Unexpected connection error: {e}")
         log.severe(f"  Error type: {type(e).__name__}")
+        log.severe(f"  Server: {server}:{data_port}")
+        log.severe(f"  Database: {database}")
+        log.severe(f"  User: {obfuscate_sensitive(user)}")
+        
+        # Check if it's a network connectivity error (connection refused, timeout, etc.)
+        is_network_error = False
+        error_msg = str(e).lower()
+        
+        if isinstance(e, (ConnectionRefusedError, TimeoutError, socket.timeout)):
+            is_network_error = True
+        elif hasattr(e, '__cause__') and e.__cause__:
+            if isinstance(e.__cause__, (ConnectionRefusedError, TimeoutError, socket.timeout)):
+                is_network_error = True
+        elif any(term in error_msg for term in ['connection refused', 'connectionrefused', 'timeout', 'errno 111', 'errno 110']):
+            is_network_error = True
+        
+        if is_network_error:
+            log.severe("")
+            log.severe("=" * 80)
+            log.severe("NETWORK CONNECTIVITY ERROR DETECTED")
+            log.severe("=" * 80)
+            log.severe("This error indicates a network-level connectivity problem.")
+            log.severe("The connection is failing BEFORE SSL/TLS negotiation, which means:")
+            log.severe("  - Certificates are NOT the issue")
+            log.severe("  - Authentication is NOT the issue")
+            log.severe("  - The problem is network reachability to the privatelink endpoint")
+            log.severe("")
+            log.severe("TROUBLESHOOTING:")
+            log.severe(f"1. Verify privatelink host '{server}' is reachable from this network")
+            log.severe("2. Check if you're on the required VPN or in the correct VPC/VNet")
+            log.severe(f"3. Test connectivity: telnet {server} {data_port}")
+            log.severe("4. Verify firewall/security group rules allow outbound traffic")
+            log.severe("5. Compare with working non-privatelink hostname")
+            log.severe("=" * 80)
+        
         raise RuntimeError(f"Unexpected error during MSSQL connection: {e}")
 
 def validate_configuration(configuration: dict) -> None:
