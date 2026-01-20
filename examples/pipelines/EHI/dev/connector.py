@@ -27,10 +27,11 @@ except ImportError:
     PSUTIL_AVAILABLE = False
     log.warning("psutil not available - resource monitoring will be disabled")
 
-# Configuration constants
-BATCH_SIZE = 5000
-PARTITION_SIZE = 50000
-CHECKPOINT_INTERVAL = 1000000  # Checkpoint every 1 million records
+# Configuration constants - Optimized for maximum throughput on healthcare data
+# These values balance speed with reliability for billion-row tables
+BATCH_SIZE = 10000  # Increased from 5K: fewer network round trips, better throughput
+PARTITION_SIZE = 100000  # Increased from 50K: fewer partition queries, better parallelism
+CHECKPOINT_INTERVAL = 2000000  # Increased from 1M: less checkpoint overhead, still safe for recovery
 CONNECTION_TIMEOUT_HOURS = 3  # Reconnect after 3 hours
 MAX_RETRIES = 5
 BASE_RETRY_DELAY = 5
@@ -80,11 +81,8 @@ def monitor_resources() -> Dict[str, Any]:
         cpu_pressure = cpu_percent > CPU_THRESHOLD_HIGH
         cpu_critical = cpu_percent > CPU_THRESHOLD_CRITICAL
 
-        # Log resource status
-        log.info(f"Resource Monitor: Memory {memory_usage:.1f}% ({memory_available_gb:.1f}GB available), "
-                f"CPU {cpu_percent:.1f}%, Disk {disk_usage:.1f}%")
-
-        # Log warnings for high resource usage
+        # Only log resource status for critical conditions or when explicitly requested
+        # Log warnings for high resource usage (always log critical conditions)
         if memory_critical:
             log.warning(f"CRITICAL MEMORY USAGE: {memory_usage:.1f}% - System under severe memory pressure!")
         elif memory_pressure:
@@ -162,7 +160,7 @@ def get_adaptive_parameters_with_monitoring(table_size: int, base_threads: int, 
         if should_reduce_batch:
             batch_size = new_batch_size
             resource_state['batch_size_reduced'] = True
-            log.info(f"Resource monitoring adjusted batch size to {batch_size:,} for table with {table_size:,} rows")
+            # Only log when actually adjusting (warnings already logged in should_reduce_batch_size)
 
         # Check if we need to reduce threads due to CPU pressure
         should_reduce_thread, new_threads = should_reduce_threads(
@@ -171,11 +169,7 @@ def get_adaptive_parameters_with_monitoring(table_size: int, base_threads: int, 
         if should_reduce_thread:
             threads = new_threads
             resource_state['threads_reduced'] = True
-            log.info(f"Resource monitoring adjusted threads to {threads} for table with {table_size:,} rows")
-
-        # Log resource-aware parameter selection
-        log.info(f"Resource-aware parameters for {table_size:,} row table: "
-                f"{threads} threads, {batch_size:,} batch size, {partition_size:,} partition size")
+            # Only log when actually adjusting (warnings already logged in should_reduce_threads)
 
     return {
         'partition_size': partition_size,
@@ -188,32 +182,37 @@ def get_adaptive_parameters_with_monitoring(table_size: int, base_threads: int, 
     }
 
 # Adaptive partitioning based on table size
+# Optimized for maximum throughput: larger partitions = fewer queries, better parallelism
 def get_adaptive_partition_size(table_size: int) -> int:
     """Get optimal partition size based on table size."""
     if table_size < SMALL_TABLE_THRESHOLD:
-        return PARTITION_SIZE  # 50K for small tables
+        return PARTITION_SIZE  # 100K for small tables (was 50K)
     elif table_size < LARGE_TABLE_THRESHOLD:
-        return PARTITION_SIZE // 2  # 25K for medium tables
+        return int(PARTITION_SIZE * 0.75)  # 75K for medium tables (was 25K)
     else:
-        return PARTITION_SIZE // 10  # 5K for large tables
+        return PARTITION_SIZE // 5  # 20K for large tables (was 5K) - still safe for billion-row tables
 
 def get_adaptive_batch_size(table_size: int) -> int:
-    """Get optimal batch size based on table size."""
+    """Get optimal batch size based on table size.
+    Larger batches = fewer network round trips = faster throughput.
+    Optimized for healthcare data with typical row widths."""
     if table_size < SMALL_TABLE_THRESHOLD:
-        return BATCH_SIZE  # 5K for small tables
+        return BATCH_SIZE  # 10K for small tables (was 5K)
     elif table_size < LARGE_TABLE_THRESHOLD:
-        return BATCH_SIZE // 2  # 2.5K for medium tables
+        return int(BATCH_SIZE * 0.6)  # 6K for medium tables (was 2.5K)
     else:
-        return BATCH_SIZE // 5  # 1K for large tables
+        return BATCH_SIZE // 3  # 3.3K for large tables (was 1K) - still memory-safe
 
 def get_adaptive_queue_size(table_size: int) -> int:
-    """Get optimal queue size based on table size."""
+    """Get optimal queue size based on table size.
+    Larger queues = better thread utilization = faster throughput.
+    Balanced to prevent memory issues while maximizing parallelism."""
     if table_size < SMALL_TABLE_THRESHOLD:
-        return 10000  # 10K for small tables
+        return 20000  # 20K for small tables (was 10K) - better thread utilization
     elif table_size < LARGE_TABLE_THRESHOLD:
-        return 5000  # 5K for medium tables
+        return 10000  # 10K for medium tables (was 5K)
     else:
-        return 1000  # 1K for large tables
+        return 3000  # 3K for large tables (was 1K) - still memory-safe for wide rows
 
 def get_adaptive_threads(table_size: int) -> int:
     """Get optimal thread count based on table size, capped at 4 threads."""
@@ -261,13 +260,15 @@ def get_adaptive_timeout(table_size: int) -> int:
         return CONNECTION_TIMEOUT_HOURS * 4  # 12 hours for large tables
 
 def get_adaptive_checkpoint_interval(table_size: int) -> int:
-    """Get adaptive checkpoint interval based on table size."""
+    """Get adaptive checkpoint interval based on table size.
+    Less frequent checkpoints = faster throughput, but balanced for recovery safety.
+    For healthcare data, we maintain reasonable checkpoint frequency."""
     if table_size < SMALL_TABLE_THRESHOLD:
-        return CHECKPOINT_INTERVAL  # 1M for small tables
+        return CHECKPOINT_INTERVAL  # 2M for small tables (was 1M) - faster, still safe
     elif table_size < LARGE_TABLE_THRESHOLD:
-        return CHECKPOINT_INTERVAL // 2  # 500K for medium tables
+        return int(CHECKPOINT_INTERVAL * 0.75)  # 1.5M for medium tables (was 500K)
     else:
-        return CHECKPOINT_INTERVAL // 10  # 100K for large tables
+        return CHECKPOINT_INTERVAL // 5  # 400K for large tables (was 100K) - good balance
 
 class ConnectionManager:
     """Manages database connections with timeout and deadlock detection."""
@@ -691,7 +692,7 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
         # Return 0 to indicate no records processed, and the table will be removed from state
         return 0
     
-    log.info(f"Table {table} using timestamp column '{timestamp_column}' for incremental sync")
+    # Only log timestamp column selection in debug mode (not needed for every table in production)
 
     # Get table size for adaptive parameters
     try:
@@ -709,8 +710,7 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
             batch_size = adaptive_params['batch_size']
             checkpoint_interval = adaptive_params['checkpoint_interval']
 
-            if adaptive_params['resource_pressure']:
-                log.info(f"Resource Monitor: Processing incremental sync for {table} with resource-aware parameters")
+            # Resource pressure warnings already logged in monitor_resources()
 
     except Exception as e:
         log.warning(f"Could not determine table size for {table}, using default batch size: {e}")
@@ -726,7 +726,10 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
             endDate=state[table], 
             startDate=start_date
         )
-        log.info(f"Incremental sync for {table}: {query}")
+        # Only log full SQL query in debug mode (very expensive for large queries)
+        debug = (isinstance(configuration.get("debug", False), str) and configuration.get("debug", "").lower() == 'true')
+        if debug:
+            log.info(f"Incremental sync for {table}: {query}")
         cursor.execute(query)
 
         cols = [d[0] for d in getattr(cursor, 'description', [])]
@@ -741,9 +744,10 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
                 op.upsert(table=table, data=flat_data)
                 records_processed += 1
 
-                # Checkpoint every adaptive interval
+                # Checkpoint every adaptive interval (log only every 10th checkpoint to reduce I/O)
                 if records_processed % checkpoint_interval == 0:
-                    log.info(f"Checkpointing {table} after {records_processed} records")
+                    if records_processed % (checkpoint_interval * 10) == 0:
+                        log.info(f"Checkpointing {table} after {records_processed:,} records")
                     op.checkpoint(state=state)
 
         # Process deletes
@@ -757,7 +761,10 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
                 startDate=start_date,
                 joincol=", ".join(pk_cols)
             )
-            log.info(f"Delete sync for {table}: {del_query}")
+            # Only log full SQL query in debug mode
+            debug = (isinstance(configuration.get("debug", False), str) and configuration.get("debug", "").lower() == 'true')
+            if debug:
+                log.info(f"Delete sync for {table}: {del_query}")
             cursor.execute(del_query)
             while True:
                 drows = cursor.fetchmany(batch_size)  # Use adaptive batch size
@@ -827,17 +834,11 @@ def process_full_load(table: str, configuration: dict, conn_manager: ConnectionM
 
         num_partitions = math.ceil(total_rows / partition_size)
 
-        # Log table processing parameters with resource context
-        log.info(f"Table {table}: {total_rows:,} rows, {num_partitions} partitions, "
-                f"{actual_threads} threads, {actual_queue_size} queue size, "
-                f"{partition_size:,} partition size, {batch_size:,} batch size, "
-                f"{checkpoint_interval:,} checkpoint interval")
-
-        if resource_pressure:
-            log.info(f"Resource Monitor: Processing {table} with resource-aware parameters due to system pressure")
-        if adaptive_params['resource_status']['status'] == 'active':
-            log.info(f"Resource Monitor: Memory {adaptive_params['resource_status']['memory_usage']:.1f}%, "
-                    f"CPU {adaptive_params['resource_status']['cpu_percent']:.1f}%")
+        # Log table processing parameters only for large tables or in debug mode
+        debug = (isinstance(configuration.get("debug", False), str) and configuration.get("debug", "").lower() == 'true')
+        if debug or category == 'large':
+            log.info(f"Table {table}: {total_rows:,} rows, {num_partitions} partitions, "
+                    f"{actual_threads} threads, {batch_size:,} batch size")
 
     # Derive an index column if none was discovered (fallback to first column)
     if not idx:
@@ -882,7 +883,10 @@ def process_full_load(table: str, configuration: dict, conn_manager: ConnectionM
                         lowerbound=partition_data.get('lowerbound', partition_data[1]) if isinstance(partition_data, dict) else partition_data[1],
                         upperbound=partition_data.get('upperbound', partition_data[2]) if isinstance(partition_data, dict) else partition_data[2]
                     )
-                    log.info(f"Partition query: {fl_q}")
+                    # Only log partition queries in debug mode (very expensive for many partitions)
+                    debug = (isinstance(configuration.get("debug", False), str) and configuration.get("debug", "").lower() == 'true')
+                    if debug:
+                        log.info(f"Partition query: {fl_q}")
                     pc.execute(fl_q)
                     cols = [d[0] for d in getattr(pc, 'description', [])]
                     while True:
@@ -963,29 +967,39 @@ def update(configuration: dict, state: dict):
         log.info(f"Tables found: {tables}")
 
     # Get table sizes and categorize them
-    log.info("Analyzing table sizes for optimal processing order...")
+    debug = (isinstance(raw_debug, str) and raw_debug.lower() == 'true')
+    if debug:
+        log.info("Analyzing table sizes for optimal processing order...")
     table_sizes = get_table_sizes(configuration, initial_conn_manager, tables)
     categorized_tables = categorize_and_sort_tables(tables, table_sizes)
 
     # Log processing strategy
-    small_count = sum(1 for _, cat, _ in categorized_tables if cat == 'small')
-    medium_count = sum(1 for _, cat, _ in categorized_tables if cat == 'medium')
-    large_count = sum(1 for _, cat, _ in categorized_tables if cat == 'large')
+    #small_count = sum(1 for _, cat, _ in categorized_tables if cat == 'small')
+    #medium_count = sum(1 for _, cat, _ in categorized_tables if cat == 'medium')
+    #large_count = sum(1 for _, cat, _ in categorized_tables if cat == 'large')
 
-    log.info(f"Processing strategy: {small_count} small tables (<1M), "
-            f"{medium_count} medium tables (1M-50M), {large_count} large tables (50M+)")
+    #log.info(f"Processing strategy: {small_count} small tables (<1M), "
+    #        f"{medium_count} medium tables (1M-50M), {large_count} large tables (50M+)")
 
-    # Display detailed processing plan
-    display_processing_plan(categorized_tables)
-
-    # Initialize resource monitoring
-    if PSUTIL_AVAILABLE:
-        log.info("Resource Monitor: System monitoring enabled - will automatically adjust parameters based on resource pressure")
-        initial_status = monitor_resources()
-        log.info(f"Resource Monitor: Initial system status - Memory {initial_status.get('memory_usage', 'N/A')}%, "
-                f"CPU {initial_status.get('cpu_percent', 'N/A')}%, Disk {initial_status.get('disk_usage', 'N/A')}%")
+    # Display detailed processing plan only in debug mode (very verbose for 616 tables)
+    if debug:
+        display_processing_plan(categorized_tables)
     else:
-        log.info("Resource Monitor: System monitoring disabled - psutil not available")
+        # Quick summary instead of full plan
+        small_count = sum(1 for _, cat, _ in categorized_tables if cat == 'small')
+        medium_count = sum(1 for _, cat, _ in categorized_tables if cat == 'medium')
+        large_count = sum(1 for _, cat, _ in categorized_tables if cat == 'large')
+        log.info(f"Processing {len(categorized_tables)} tables: {small_count} small, {medium_count} medium, {large_count} large")
+
+    # Initialize resource monitoring (silent unless issues detected)
+    if PSUTIL_AVAILABLE:
+        if debug:
+            log.info("Resource Monitor: System monitoring enabled")
+        initial_status = monitor_resources()
+        # Only log initial status in debug mode or if there are issues
+        if debug or initial_status.get('memory_pressure') or initial_status.get('cpu_pressure'):
+            log.info(f"Resource Monitor: Initial status - Memory {initial_status.get('memory_usage', 'N/A')}%, "
+                    f"CPU {initial_status.get('cpu_percent', 'N/A')}%")
 
     # Initialize state for tables
     if "last_updated_at" in state:
@@ -1002,8 +1016,12 @@ def update(configuration: dict, state: dict):
         start_date = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         records_processed = 0
 
-        log.info(f"Processing table {processed_tables}/{total_tables}: {table} "
-                f"({category}, {row_count:,} rows)")
+        # Only log detailed table info for large tables or in debug mode
+        if debug or category == 'large':
+            log.info(f"Processing table {processed_tables}/{total_tables}: {table} "
+                    f"({category}, {row_count:,} rows)")
+        elif processed_tables % 10 == 0:  # Progress update every 10 tables
+            log.info(f"Processing table {processed_tables}/{total_tables}: {table}")
 
         # Create connection manager with table size context for adaptive timeouts
         conn_manager = ConnectionManager(configuration, row_count)
@@ -1060,8 +1078,9 @@ def update(configuration: dict, state: dict):
                     # Full load - direct call (no yield per SDK best practices)
                     records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state)
 
-                # Successful completion, exit retry loop
-                log.info(f"Successfully processed table {table}: {records_processed} records")
+                # Successful completion, exit retry loop (only log for large tables or in debug)
+                if debug or category == 'large' or records_processed > 1000000:
+                    log.info(f"Successfully processed table {table}: {records_processed:,} records")
                 break
 
             except (DeadlockError, TimeoutError) as e:
@@ -1096,43 +1115,68 @@ def update(configuration: dict, state: dict):
         # Direct operation call without yield - per SDK best practices
         op.checkpoint(state=state)
 
-        # Record count validation
-        try:
-            schema_name = get_schema_name(configuration)
-            qualified_table = qualify_table_name(table, schema_name)
-            with conn_manager.get_cursor() as cursor:
-                cursor.execute(configuration["src_val_record_count"].format(tableName=qualified_table))
-                row = cursor.fetchone()
-                # Handle both tuple and dict results, with support for column alias
-                if isinstance(row, dict):
-                    count = row.get('row_count') or row.get('ROW_COUNT') or list(row.values())[0]
-                else:
-                    count = row[0]
+        # Record count validation - configurable to skip expensive operations on large tables
+        # Configuration options:
+        # - "all" (default): validate all tables
+        # - "small_medium": only validate small and medium tables (skip large tables)
+        # - "none": skip all validation
+        # - comma-separated list of table names: only validate specified tables
+        validate_config = configuration.get("validate_counts", "all").strip().lower()
+        should_validate = False
 
-            # Direct operation call without yield - per SDK best practices
-            op.upsert(table="CDK_VALIDATION", data={
-                "datetime": datetime.utcnow().isoformat() + "Z",
-                "tablename": table,
-                "count": count,
-                "records_processed": records_processed,
-                "category": category,
-                "processing_order": processed_tables
-            })
+        if validate_config == "none":
+            should_validate = False
+        elif validate_config == "all":
+            should_validate = True
+        elif validate_config == "small_medium":
+            # Only validate small and medium tables, skip large tables
+            should_validate = category in ['small', 'medium']
+        else:
+            # Comma-separated list of table names to validate
+            validate_tables = [t.strip() for t in validate_config.split(',') if t.strip()]
+            should_validate = table in validate_tables
 
-        except Exception as e:
-            log.warning(f"Failed to record validation for table {table}: {e}")
+        if should_validate:
+            try:
+                schema_name = get_schema_name(configuration)
+                qualified_table = qualify_table_name(table, schema_name)
+                with conn_manager.get_cursor() as cursor:
+                    cursor.execute(configuration["src_val_record_count"].format(tableName=qualified_table))
+                    row = cursor.fetchone()
+                    # Handle both tuple and dict results, with support for column alias
+                    if isinstance(row, dict):
+                        count = row.get('row_count') or row.get('ROW_COUNT') or list(row.values())[0]
+                    else:
+                        count = row[0]
 
-        # Progress update
-        log.info(f"Completed {processed_tables}/{total_tables} tables. "
-                f"Next: {categorized_tables[processed_tables][0] if processed_tables < total_tables else 'None'}")
+                # Direct operation call without yield - per SDK best practices
+                op.upsert(table="CDK_VALIDATION", data={
+                    "datetime": datetime.utcnow().isoformat() + "Z",
+                    "tablename": table,
+                    "count": count,
+                    "records_processed": records_processed,
+                    "category": category,
+                    "processing_order": processed_tables
+                })
+                # Only log validation details in debug mode
+                if debug:
+                    log.info(f"Validation recorded for {table}: {count:,} rows in source, {records_processed:,} processed")
 
-        # Periodic resource monitoring check
-        if PSUTIL_AVAILABLE and processed_tables % 5 == 0:  # Check every 5 tables
-            log.info("Resource Monitor: Periodic system check...")
+            except Exception as e:
+                log.warning(f"Failed to record validation for table {table}: {e}")
+        # Skip logging validation skip (unnecessary noise)
+
+        # Progress update (less frequent to reduce I/O)
+        if processed_tables % 10 == 0 or processed_tables == total_tables:
+            log.info(f"Completed {processed_tables}/{total_tables} tables")
+
+        # Periodic resource monitoring check (silent unless issues)
+        if PSUTIL_AVAILABLE and processed_tables % 20 == 0:  # Check every 20 tables (less frequent)
             current_status = monitor_resources()
-            if current_status.get('status') == 'active':
-                log.info(f"Resource Monitor: Current status - Memory {current_status['memory_usage']:.1f}%, "
-                        f"CPU {current_status['cpu_percent']:.1f}%, Disk {current_status['disk_usage']:.1f}%")
+            # Only log if there are resource pressure issues
+            if current_status.get('status') == 'active' and (current_status.get('memory_pressure') or current_status.get('cpu_pressure')):
+                log.warning(f"Resource Monitor: Pressure detected - Memory {current_status['memory_usage']:.1f}%, "
+                        f"CPU {current_status['cpu_percent']:.1f}%")
 
 def display_processing_plan(categorized_tables: List[Tuple[str, str, int]]) -> None:
     """Display a detailed processing plan for the sync operation."""
@@ -1194,19 +1238,6 @@ def display_processing_plan(categorized_tables: List[Tuple[str, str, int]]) -> N
         log.info(f"Small tables: {len(small_tables)} tables, {small_rows:,} rows (N/A%)")
         log.info(f"Medium tables: {len(medium_tables)} tables, {medium_rows:,} rows (N/A%)")
         log.info(f"Large tables: {len(large_tables)} tables, {large_rows:,} rows (N/A%)")
-
-    # # Estimated processing time (rough estimates)
-    # if small_tables:
-    #     log.info(f"\nEstimated processing time:")
-    #     log.info(f"  Small tables: ~{len(small_tables) * 2} minutes")
-    # if medium_tables:
-    #     log.info(f"  Medium tables: ~{len(medium_tables) * 15} minutes")
-    # if large_tables:
-    #     log.info(f"  Large tables: ~{sum(rows/1000000 for _, _, rows in large_tables)} hours")
-
-    # log.info("=" * 80)
-    # log.info("Starting sync process...")
-    # log.info("=" * 80)
 
 # Initialize the connector with the defined update and schema functions
 connector = Connector(update=update, schema=schema)
