@@ -29,6 +29,7 @@
     "max_queue_size": "0",
     "max_retries": "5",
     "retry_sleep_seconds": "5",
-    "debug": "false"
+    "debug": "false",
+    "validate_counts": "none"
 }
 
