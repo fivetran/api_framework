@@ -796,6 +796,11 @@ def process_full_load(table: str, configuration: dict, conn_manager: ConnectionM
     Returns:
         Number of records processed
     """
+ 
+    category = locals().get('category', 'medium')
+    if category not in ['small', 'medium', 'large']:
+        category = 'medium'
+    
     records_processed = 0
     idx = pk_map.get(table)
 
