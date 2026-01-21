@@ -780,7 +780,7 @@ def process_incremental_sync(table: str, configuration: dict, state: dict,
     return records_processed
 
 def process_full_load(table: str, configuration: dict, conn_manager: ConnectionManager, 
-                     pk_map: Dict[str, str], threads: int, max_queue_size: int, state: dict) -> int:
+                     pk_map: Dict[str, str], threads: int, max_queue_size: int, state: dict, category: str = 'medium') -> int:
     """Process full load for a table using partitioned approach with direct operation calls (no yield).
     
     Args:
@@ -791,6 +791,7 @@ def process_full_load(table: str, configuration: dict, conn_manager: ConnectionM
         threads: Number of threads to use (0 for adaptive)
         max_queue_size: Maximum queue size (0 for adaptive)
         state: State dictionary for checkpointing
+        category: Table category ('small', 'medium', 'large') for logging purposes
         
     Returns:
         Number of records processed
@@ -1058,7 +1059,7 @@ def update(configuration: dict, state: dict):
                             state["_tables_without_timestamp"] = tables_without_timestamp
                             state.pop(table, None)  # Remove timestamp state
                             # Perform full load now
-                            records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state)
+                            records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state, category)
                     except Exception as inc_error:
                         # If incremental sync fails due to missing column, fall back to full load
                         error_str = str(inc_error).lower()
@@ -1071,12 +1072,12 @@ def update(configuration: dict, state: dict):
                                 tables_without_timestamp.append(table)
                             state["_tables_without_timestamp"] = tables_without_timestamp
                             state.pop(table, None)  # Remove from state
-                            records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state)
+                            records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state, category)
                         else:
                             raise  # Re-raise if it's a different error
                 else:
                     # Full load - direct call (no yield per SDK best practices)
-                    records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state)
+                    records_processed = process_full_load(table, configuration, conn_manager, pk_map, threads, max_queue_size, state, category)
 
                 # Successful completion, exit retry loop (only log for large tables or in debug)
                 if debug or category == 'large' or records_processed > 1000000:
