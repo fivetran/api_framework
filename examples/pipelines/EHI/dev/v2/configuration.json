@@ -1,0 +1,22 @@
+{
+    "MSSQL_SERVER": "your-privatelink-server.database.windows.net",
+    "MSSQL_SERVER_DIR": "localhost",
+    "MSSQL_CERT_SERVER": "your-cert-server.database.windows.net",
+    "MSSQL_CERT_SERVER_DIR": "localhost",
+    "MSSQL_PORT": "1433",
+    "MSSQL_PORT_DIR": "1433",
+    "MSSQL_CERT_PORT": "1434",
+    "MSSQL_CERT_PORT_DIR": "1434",
+    "MSSQL_DATABASE": "your_database_name",
+    "MSSQL_USER": "your_username",
+    "MSSQL_PASSWORD": "your_password",
+    "MSSQL_SCHEMA": "dbo",
+    "incremental_timestamp_column": "UPDATED_DATE",
+    "schema_table_list_query": "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo' AND TABLE_TYPE = 'BASE TABLE'",
+    "schema_pk_query": "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_NAME = '{table}' AND TABLE_SCHEMA = 'dbo' ORDER BY ORDINAL_POSITION",
+    "schema_col_query": "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table}' AND TABLE_SCHEMA = 'dbo' ORDER BY ORDINAL_POSITION",
+    "src_val_record_count": "SELECT COUNT(*) AS row_count FROM [{schema}].[{tableName}]",
+    "max_retries": "5",
+    "retry_sleep_seconds": "5",
+    "cdw_cert": ""
+}
