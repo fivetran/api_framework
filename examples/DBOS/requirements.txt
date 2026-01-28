@@ -1,0 +1,5 @@
+dbos
+fastapi
+uvicorn[standard]
+httpx
+pydantic
