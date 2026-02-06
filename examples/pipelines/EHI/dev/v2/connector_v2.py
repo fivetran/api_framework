@@ -527,17 +527,84 @@ def categorize_and_sort_tables(tables: List[str], table_sizes: Dict[str, int]) -
     return categorized
 
 
-def get_incremental_column(configuration: dict, table: str) -> Optional[str]:
-    """Get the incremental timestamp column for a table."""
-    # Check table-specific configuration
+def get_incremental_column(configuration: dict, table: str, conn_manager: Optional[ConnectionManager] = None) -> Optional[str]:
+    """
+    Get the incremental timestamp column for a table with priority order (FIFO).
+    
+    Priority order:
+    1. Table-specific configuration (incremental_timestamp_column_{table})
+    2. Global comma-separated list (incremental_timestamp_column) - checks each column in order
+       until one exists in the table
+    
+    Args:
+        configuration: Configuration dictionary
+        table: Table name
+        conn_manager: Connection manager (optional, used to verify column existence)
+    
+    Returns:
+        First available column from priority list, or None if none found
+    """
+    # Check table-specific configuration first (highest priority)
     table_col_key = f"incremental_timestamp_column_{table}".lower()
     for key, value in configuration.items():
         if key.lower() == table_col_key and value:
-            return value
+            column_name = value.strip()
+            # If conn_manager provided, verify column exists (case-insensitive)
+            if conn_manager:
+                try:
+                    columns = get_table_columns(configuration, table, conn_manager)
+                    # Case-insensitive matching
+                    columns_lower = {col.lower(): col for col in columns}
+                    if column_name.lower() in columns_lower:
+                        # Return the actual column name from the table (preserves case)
+                        return columns_lower[column_name.lower()]
+                    else:
+                        log.warning(f"Table {table}: Table-specific column '{column_name}' not found, checking global priority list")
+                except Exception as e:
+                    log.warning(f"Table {table}: Error verifying table-specific column '{column_name}': {e}")
+            else:
+                return column_name
     
-    # Check global configuration
-    global_col = configuration.get("incremental_timestamp_column", "").strip()
-    return global_col if global_col else None
+    # Check global configuration - parse comma-separated list
+    global_col_config = configuration.get("incremental_timestamp_column", "").strip()
+    if not global_col_config:
+        return None
+    
+    # Parse comma-separated columns (FIFO priority order)
+    column_candidates = [col.strip() for col in global_col_config.split(",") if col.strip()]
+    
+    if not column_candidates:
+        return None
+    
+    # If only one column specified, return it (backward compatible)
+    if len(column_candidates) == 1:
+        return column_candidates[0]
+    
+    # Multiple columns specified - check each in priority order (FIFO)
+    # If conn_manager provided, verify which columns exist in the table
+    if conn_manager:
+        try:
+            table_columns = get_table_columns(configuration, table, conn_manager)
+            # Create case-insensitive lookup (preserves actual case from table)
+            columns_lower = {col.lower(): col for col in table_columns}
+            
+            # Return first column from priority list that exists in the table (case-insensitive match)
+            for candidate in column_candidates:
+                if candidate.lower() in columns_lower:
+                    # Return the actual column name from the table (preserves case)
+                    actual_column = columns_lower[candidate.lower()]
+                    log.info(f"Table {table}: Selected incremental column '{actual_column}' from priority list (matched '{candidate}')")
+                    return actual_column
+            
+            # None of the priority columns exist
+            log.warning(f"Table {table}: None of the priority columns {column_candidates} exist in table. Available columns: {table_columns[:10]}...")
+            return None
+        except Exception as e:
+            log.warning(f"Table {table}: Error checking column existence: {e}. Using first column from priority list: {column_candidates[0]}")
+            return column_candidates[0]  # Fallback to first in list
+    else:
+        # No conn_manager - return first column (will be verified later when conn_manager is available)
+        return column_candidates[0]
 
 
 def get_date_range(configuration: dict, state: dict, table: str, inc_col: Optional[str]) -> Tuple[Optional[datetime], datetime]:
@@ -761,7 +828,7 @@ def process_table_with_slicing(configuration: dict, state: dict, table: str,
     columns = get_table_columns(configuration, table, conn_manager)
     batch_size = get_adaptive_batch_size(table_size)
     checkpoint_interval = get_adaptive_checkpoint_interval(table_size)
-    inc_col = get_incremental_column(configuration, table)
+    inc_col = get_incremental_column(configuration, table, conn_manager)
     
     # Prepare slice data for parallel processing
     slice_data_list = []
@@ -801,7 +868,7 @@ def process_table_with_slicing(configuration: dict, state: dict, table: str,
     # Handle deleted records using SQL-based detection (no PK sets in state)
     # Per agentsv2.md: State ONLY stores {table}_last_sync timestamps (concise)
     pks = get_primary_keys(configuration, table, conn_manager)
-    inc_col = get_incremental_column(configuration, table)
+    inc_col = get_incremental_column(configuration, table, conn_manager)
     start_date, end_date = get_date_range(configuration, state, table, inc_col)
     if pks:
         detect_deleted_records_sql(configuration, table, pks, inc_col, start_date, end_date, conn_manager)
@@ -821,7 +888,7 @@ def process_table_with_slicing(configuration: dict, state: dict, table: str,
 def process_table_direct(configuration: dict, state: dict, table: str, 
                         table_size: int, conn_manager: ConnectionManager) -> int:
     """Process table directly without slicing (for small tables or incremental syncs)."""
-    inc_col = get_incremental_column(configuration, table)
+    inc_col = get_incremental_column(configuration, table, conn_manager)
     start_date, end_date = get_date_range(configuration, state, table, inc_col)
     
     is_incremental = start_date is not None
@@ -921,7 +988,7 @@ def process_table(configuration: dict, state: dict, table: str,
     Returns: Number of records processed
     """
     # Check if incremental sync
-    inc_col = get_incremental_column(configuration, table)
+    inc_col = get_incremental_column(configuration, table, conn_manager)
     start_date, _ = get_date_range(configuration, state, table, inc_col)
     is_incremental = start_date is not None
     
