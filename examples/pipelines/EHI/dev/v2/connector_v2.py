@@ -29,6 +29,7 @@ import queue
 import time
 import random
 import concurrent.futures
+import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional, Tuple
 from contextlib import contextmanager
@@ -48,6 +49,11 @@ SMALL_TABLE_THRESHOLD = 1000000  # 1M rows
 LARGE_TABLE_THRESHOLD = 100000000  # 100M rows
 SLICE_THRESHOLD = 100000  # Slice tables >100K rows
 MAX_THREADS = 4  # Maximum threads for parallel slice processing
+
+# Deleted record detection thresholds (for scalability)
+# Per agentsv2.md: State ONLY stores {table}_last_sync timestamps (concise, table-level adjustments)
+# Delete detection uses SQL queries to source database (no PK sets in state)
+DELETE_BATCH_SIZE = 1000  # Batch delete operations for efficiency
 
 # Deadlock and timeout detection patterns
 DEADLOCK_PATTERNS = [
@@ -71,6 +77,101 @@ def validate_configuration(configuration: dict) -> None:
     missing = [k for k in required if k not in configuration or not configuration[k]]
     if missing:
         raise ValueError(f"Missing required configuration: {', '.join(missing)}")
+
+
+def detect_deleted_records_sql(configuration: dict, table: str, pks: List[str], 
+                                inc_col: Optional[str], start_date: Optional[datetime], 
+                                end_date: datetime, conn_manager: ConnectionManager) -> int:
+    """
+    Detect deleted records using SQL query to source database.
+    Queries for records with _IsDeleted = 1 flag (SQL-based, no state storage needed).
+    
+    Per agentsv2.md: State only contains {table}_last_sync timestamps (concise).
+    
+    Args:
+        configuration: Configuration dictionary
+        table: Table name
+        pks: Primary key columns
+        inc_col: Incremental timestamp column
+        start_date: Start date for incremental sync (None for full sync)
+        end_date: End date for sync
+        conn_manager: Connection manager
+        
+    Returns:
+        Number of deleted records processed
+    """
+    if not pks:
+        return 0
+    
+    schema_name = configuration.get("MSSQL_SCHEMA", "dbo")
+    qualified_table = f"[{schema_name}].[{table}]"
+    
+    # Build delete detection query
+    # Query for records with _IsDeleted = 1 flag
+    pk_cols = ", ".join([f"[{pk}]" for pk in pks])
+    
+    if inc_col and start_date:
+        # Incremental sync: query deleted records in time range
+        start_str = start_date.strftime('%Y-%m-%d %H:%M:%S')
+        end_str = end_date.strftime('%Y-%m-%d %H:%M:%S')
+        delete_query = f"""
+        SELECT {pk_cols}
+        FROM {qualified_table}
+        WHERE [{inc_col}] >= '{start_str}' AND [{inc_col}] <= '{end_str}' 
+        AND _IsDeleted = 1
+        """
+    else:
+        # Full sync: query all deleted records
+        delete_query = f"""
+        SELECT {pk_cols}
+        FROM {qualified_table}
+        WHERE _IsDeleted = 1
+        """
+    
+    deleted_count = 0
+    try:
+        with conn_manager.get_cursor() as cursor:
+            cursor.execute(delete_query)
+            
+            delete_batch = []
+            while True:
+                rows = cursor.fetchmany(DELETE_BATCH_SIZE)
+                if not rows:
+                    break
+                
+                for row in rows:
+                    # Convert row to delete record with primary keys
+                    if isinstance(row, dict):
+                        delete_record = {pk: row.get(pk) for pk in pks}
+                    else:
+                        delete_record = {pk: row[i] for i, pk in enumerate(pks)}
+                    
+                    delete_batch.append(delete_record)
+                    
+                    # Process in batches
+                    if len(delete_batch) >= DELETE_BATCH_SIZE:
+                        for record in delete_batch:
+                            op.delete(table=table, data=record)
+                        deleted_count += len(delete_batch)
+                        delete_batch = []
+            
+            # Process remaining deletes after loop completes
+            if delete_batch:
+                for record in delete_batch:
+                    op.delete(table=table, data=record)
+                deleted_count += len(delete_batch)
+        
+        if deleted_count > 0:
+            log.info(f"Table {table}: Marked {deleted_count:,} records as deleted (SQL-based detection)")
+    
+    except Exception as e:
+        # If _IsDeleted column doesn't exist, log warning and continue
+        if "_IsDeleted" in str(e) or "Invalid column name" in str(e):
+            log.warning(f"Table {table}: _IsDeleted column not found, skipping delete detection: {e}")
+        else:
+            log.warning(f"Table {table}: Error detecting deleted records: {e}")
+    
+    return deleted_count
 
 
 def generate_cert_chain(server: str, port: int) -> str:
@@ -493,13 +594,12 @@ def build_query(configuration: dict, table: str, inc_col: Optional[str],
     # Build WHERE clause for incremental sync
     where_clause = ""
     if inc_col and start_date:
-        # Incremental: get records updated since last sync
+        # Incremental: get records updated since last sync (exclude nulls for incremental)
         start_str = start_date.strftime('%Y-%m-%d %H:%M:%S')
         end_str = end_date.strftime('%Y-%m-%d %H:%M:%S')
         where_clause = f"WHERE [{inc_col}] > '{start_str}' AND [{inc_col}] <= '{end_str}'"
-    elif inc_col:
-        # Full sync with timestamp column - get all records
-        where_clause = f"WHERE [{inc_col}] IS NOT NULL"
+    # For full sync, include ALL records including those with null timestamps
+    # No WHERE clause needed - we want everything
     
     # Get all columns
     query = f"SELECT * FROM {qualified_table}"
@@ -583,7 +683,7 @@ def process_slice(slice_data: Tuple[int, Any, Any, dict, str, str, List[str], in
     max_timestamp = None
     
     try:
-        # Build slice query
+        # Build slice query - include null timestamps for full sync
         slice_query = f"SELECT * FROM {qualified_table} WHERE [{index_col}] >= '{lower_bound}' AND [{index_col}] < '{upper_bound}'"
         
         with slice_conn_manager.get_cursor() as cursor:
@@ -618,12 +718,15 @@ def process_slice(slice_data: Tuple[int, Any, Any, dict, str, str, List[str], in
                             if max_timestamp is None or ts > max_timestamp:
                                 max_timestamp = ts
                 
-                # Checkpoint periodically (thread-safe)
+                # Checkpoint periodically (thread-safe, reduced logging)
                 if records_processed % checkpoint_interval == 0:
-                    log.info(f"Table {table} slice {slice_idx+1}: Processed {records_processed:,} records")
+                    # Strategic logging: only log every 5M records per slice
+                    if records_processed % (checkpoint_interval * 5) == 0:
+                        log.info(f"Table {table} slice {slice_idx+1}: Processed {records_processed:,} records")
     
     except Exception as e:
         log.severe(f"Table {table} slice {slice_idx+1}: Error - {e}")
+        log.severe(f"Table {table} slice {slice_idx+1}: Query was: {slice_query[:200]}...")
         raise
     finally:
         slice_conn_manager.close()
@@ -695,6 +798,14 @@ def process_table_with_slicing(configuration: dict, state: dict, table: str,
                 log.severe(f"Table {table}: Slice processing failed - {e}")
                 raise
     
+    # Handle deleted records using SQL-based detection (no PK sets in state)
+    # Per agentsv2.md: State ONLY stores {table}_last_sync timestamps (concise)
+    pks = get_primary_keys(configuration, table, conn_manager)
+    inc_col = get_incremental_column(configuration, table)
+    start_date, end_date = get_date_range(configuration, state, table, inc_col)
+    if pks:
+        detect_deleted_records_sql(configuration, table, pks, inc_col, start_date, end_date, conn_manager)
+    
     # Final checkpoint
     if inc_col and max_timestamp:
         state[f"{table}_last_sync"] = max_timestamp.isoformat()
@@ -715,6 +826,9 @@ def process_table_direct(configuration: dict, state: dict, table: str,
     
     is_incremental = start_date is not None
     sync_type = "incremental" if is_incremental else "full"
+    
+    # Get primary keys for deleted record detection
+    pks = get_primary_keys(configuration, table, conn_manager)
     
     # Build query
     query = build_query(configuration, table, inc_col, start_date, end_date)
@@ -766,12 +880,19 @@ def process_table_direct(configuration: dict, state: dict, table: str,
                             if max_timestamp is None or ts > max_timestamp:
                                 max_timestamp = ts
                 
-                # Checkpoint periodically
+                # Checkpoint periodically (reduced logging frequency)
                 if records_processed % checkpoint_interval == 0:
                     if inc_col and max_timestamp:
                         state[f"{table}_last_sync"] = max_timestamp.isoformat()
                     op.checkpoint(state=state)
-                    log.info(f"Table {table}: Processed {records_processed:,} records")
+                    # Strategic logging: only log every 10M records for large tables
+                    if records_processed % (checkpoint_interval * 5) == 0:
+                        log.info(f"Table {table}: Processed {records_processed:,} records")
+        
+        # Handle deleted records using SQL-based detection (no PK sets in state)
+        # Per agentsv2.md: State ONLY stores {table}_last_sync timestamps (concise)
+        if pks:
+            detect_deleted_records_sql(configuration, table, pks, inc_col, start_date, end_date, conn_manager)
         
         # Final checkpoint
         if inc_col and max_timestamp:
@@ -785,6 +906,7 @@ def process_table_direct(configuration: dict, state: dict, table: str,
         
     except Exception as e:
         log.severe(f"Table {table}: Error during sync: {e}")
+        log.severe(f"Table {table}: Query was: {query[:200]}...")  # Log first 200 chars of query
         raise RuntimeError(f"Failed to sync table {table}: {str(e)}")
     
     return records_processed
