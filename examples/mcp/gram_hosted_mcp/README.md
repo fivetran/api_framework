@@ -24,7 +24,7 @@ Model Context Protocol (MCP) server for Fivetran operations, seamlessly integrat
 
 ### Step 1: Install via Gram.ai
 
-1. **Visit the installation page**: [https://app.getgram.ai/mcp/fivetran-services-fivetran-api-mcp/install](https://app.getgram.ai/mcp/fivetran-services-fivetran-api-mcp/install) & [Fivetran Services CSDK MCP](https://app.getgram.ai/mcp/fivetran-services-csdk/install)
+1. **Visit the installation page**: [Fivetran Services API MCP](https://app.getgram.ai/mcp/fivetran-services-fivetran-api-mcp/install) & [Fivetran Services CSDK MCP](https://app.getgram.ai/mcp/fivetran-services-csdk/install)
 
 2. **Select Cursor IDE** from the available IDE options
 
