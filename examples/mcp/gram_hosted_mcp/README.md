@@ -2,7 +2,7 @@
 
 Model Context Protocol (MCP) server for Fivetran operations, seamlessly integrated with Cursor IDE through Gram.ai.
 
-**Visit the installation page**: [https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install](https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install)
+**Visit the installation page**: [https://app.getgram.ai/mcp/fivetran-services-fivetran-api-mcp/install](https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install)
 
 ## Features
 
@@ -21,7 +21,7 @@ Model Context Protocol (MCP) server for Fivetran operations, seamlessly integrat
 
 ### Step 1: Install via Gram.ai
 
-1. **Visit the installation page**: [https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install](https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install)
+1. **Visit the installation page**: [https://app.getgram.ai/mcp/fivetran-services-fivetran-api-mcp/install](https://app.getgram.ai/mcp/test-demo-fivetran-api-mcp/install)
 
 2. **Select Cursor IDE** from the available IDE options
 
