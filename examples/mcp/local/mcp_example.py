@@ -160,7 +160,8 @@ def _make_api_request(method: str, endpoint: str, payload: Dict = None, params: 
         url = f'{base_url}/{endpoint}'
         headers = {
             'Accept': 'application/json;version=2',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+             "User-Agent": "fivetran-services-mcp",
         }
         
         # Set timeout values to prevent hanging
