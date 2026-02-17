@@ -44,6 +44,7 @@ def _request(
     headers = {
         "Accept": API_VERSION_HEADER,
         "Content-Type": "application/json",
+        "User-Agent": "fivetran-quickstart-mcp",
     }
     timeout = (10, 30)
 
