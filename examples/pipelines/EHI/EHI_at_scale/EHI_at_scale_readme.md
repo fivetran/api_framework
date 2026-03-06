@@ -2,7 +2,7 @@
 
 ## Connector overview
 
-This enhanced connector is specifically designed to handle massive healthcare datasets (like EHR system data, for example Epic Caboodle) with intelligent table size categorization and adaptive processing strategies. It can handle 1+ billion row tables without timeouts or hangs, prevents memory overflow on large datasets, has automati deadlock detection and timeout recovery, and provides visibility into your syncs' progress and status.
+This enhanced connector is specifically designed to handle massive healthcare datasets (like EHR system data, for example Epic Caboodle) with intelligent table size categorization and adaptive processing strategies.
 
 ### How it works
 The connector uses the following strategies to sync large datasets efficiently:
