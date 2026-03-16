@@ -320,38 +320,36 @@ def connect_to_mssql(configuration: dict):
         TimeoutError: If connection times out
         RuntimeError: For other connection errors
     """
-    if not PYTDS_AVAILABLE:
-        raise RuntimeError("pytds not available - cannot connect to SQL Server")
-    
     is_local = platform.system() == "Darwin"
     server_key = "MSSQL_SERVER_DIR" if is_local else "MSSQL_SERVER"
+    cert_key = "MSSQL_CERT_SERVER_DIR" if is_local else "MSSQL_CERT_SERVER"
     port_key = "MSSQL_PORT_DIR" if is_local else "MSSQL_PORT"
+    cert_port_key = "MSSQL_CERT_PORT_DIR" if is_local else "MSSQL_CERT_PORT"
     
     # Get connection parameters
     server = configuration.get(server_key)
+    cert_server = configuration.get(cert_key) or server  # Fallback to server if cert_server not provided
     port_str = configuration.get(port_key)
-    database = configuration.get("MSSQL_DATABASE")
-    user = configuration.get("MSSQL_USER")
-    password = configuration.get("MSSQL_PASSWORD")
-    cdw_cert = configuration.get("cdw_cert", "")
+    cert_port_str = configuration.get(cert_port_key)  # Optional - falls back to port if not provided
+    # Strip whitespace from cert_port_str to handle empty strings
+    if cert_port_str:
+        cert_port_str = cert_port_str.strip()
+        if not cert_port_str:
+            cert_port_str = None
     
     # Validate required parameters
     if not server:
-        raise ValueError(f"Missing required configuration: {server_key}")
+        raise ValueError(f"Missing required configuration: {server_key}. "
+                       f"Please provide the MSSQL server address.")
+    
     if not port_str:
-        raise ValueError(f"Missing required configuration: {port_key}")
+        raise ValueError(f"Missing required configuration: {port_key}. "
+                       f"Please provide the MSSQL port number.")
     
     try:
         port = int(port_str)
     except (ValueError, TypeError):
         raise ValueError(f"Invalid port value: {port_str}. Port must be a number.")
-    
-    if not database:
-        raise ValueError("Missing required configuration: MSSQL_DATABASE")
-    if not user:
-        raise ValueError("Missing required configuration: MSSQL_USER")
-    if not password:
-        raise ValueError("Missing required configuration: MSSQL_PASSWORD")
     
     # Check if this is a private link connection
     is_privatelink = 'privatelink' in server.lower()
@@ -364,29 +362,77 @@ def connect_to_mssql(configuration: dict):
         else:
             log.info(f"DNS resolution confirmed for private link {server}")
     
-    # Handle certificate configuration
-    cafile = None
-    cafile_cfg = cdw_cert.strip() if cdw_cert else None
+    # Get certificate port (falls back to regular port if not specified)
+    # For private links, certificate port MUST be explicitly specified
+    if cert_port_str:
+        try:
+            cert_port = int(cert_port_str)
+            if cert_port < 1 or cert_port > 65535:
+                raise ValueError(f"Invalid cert port: {cert_port} (must be 1-65535)")
+            log.info(f"Using separate certificate port: {cert_port} (SQL port: {port})")
+        except (ValueError, TypeError):
+            log.warning(f"Invalid cert_port value: {cert_port_str}. Falling back to SQL port: {port}")
+            cert_port = port
+    else:
+        # For private links, certificate port is required
+        if is_privatelink:
+            raise ValueError(
+                f"Private link connection requires explicit certificate port. "
+                f"Please set {cert_port_key} in configuration. "
+                f"For private links, the certificate server typically uses a different port (e.g., 1434) "
+                f"than the SQL server port ({port})."
+            )
+        cert_port = port
+        log.info(f"Using SQL port for certificate generation: {port}")
     
+    # Validate database, user, and password
+    database = configuration.get("MSSQL_DATABASE")
+    user = configuration.get("MSSQL_USER")
+    password = configuration.get("MSSQL_PASSWORD")
+    
+    if not database:
+        raise ValueError("Missing required configuration: MSSQL_DATABASE")
+    if not user:
+        raise ValueError("Missing required configuration: MSSQL_USER")
+    if not password:
+        raise ValueError("Missing required configuration: MSSQL_PASSWORD")
+    
+    # Log connection attempt (without sensitive data)
+    log.info(f"Connecting to MSSQL server: {server}:{port}")
+    log.info(f"Database: {database}, User: {user}")
+    if 'privatelink' in server.lower():
+        log.info("Private link connection detected")
+    
+    # Handle certificate configuration
+    # PRIORITY: If cdw_cert is provided, use it for authentication and do NOT generate certificates
+    cafile_cfg = configuration.get("cdw_cert", None)
+    cafile = None
+    
+    # Log certificate source
     if cafile_cfg:
-        log.info("cdw_cert found in configuration - using provided certificate")
+        log.info("cdw_cert found in configuration - will use provided certificate for MSSQL authentication")
+    else:
+        if cert_port != port or cert_server != server:
+            log.info(f"Certificate will be fetched from certificate server: {cert_server}:{cert_port} (SQL server: {server}:{port})")
+        else:
+            log.info(f"Certificate will be fetched from: {cert_server}:{cert_port}")
+
+    if cafile_cfg:
+        # cdw_cert is provided - use it exclusively, do not generate certificates
+        log.info("cdw_cert configuration found - using provided certificate and skipping certificate generation")
         
         if cafile_cfg.lstrip().startswith("-----BEGIN"):
             # Inline certificate (PEM format)
-            log.info("Detected inline PEM certificate")
-            if not OPENSSL_AVAILABLE:
-                raise RuntimeError("OpenSSL Python bindings not available. Install pyopenssl package.")
-            
+            log.info("Using inline certificate from cdw_cert configuration")
             try:
+                import OpenSSL.SSL as SSL, OpenSSL.crypto as crypto, pytds.tls
                 # Build a fresh X509 store and attach it to the SSL context
                 ctx = SSL.Context(SSL.TLS_METHOD)
                 ctx.set_verify(SSL.VERIFY_PEER, lambda conn, cert, errnum, depth, ok: bool(ok))
-                
                 pem_blocks = re.findall(
                     r'-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----',
                     cafile_cfg, re.DOTALL
                 )
-                
                 if not pem_blocks:
                     raise ValueError("No valid certificates found in cdw_cert configuration")
                 
@@ -394,64 +440,143 @@ def connect_to_mssql(configuration: dict):
                 store = ctx.get_cert_store()
                 if store is None:
                     raise RuntimeError("Failed to retrieve certificate store from SSL context")
-                
                 for pem in pem_blocks:
                     certificate = crypto.load_certificate(crypto.FILETYPE_PEM, pem)
                     store.add_cert(certificate)
-                
                 # Configure pytds to use the custom SSL context
                 pytds.tls.create_context = lambda cafile: ctx
                 cafile = 'ignored'
                 log.info(f"Loaded {len(pem_blocks)} certificate(s) from inline cdw_cert configuration")
-                
+            except ImportError:
+                log.severe("OpenSSL Python bindings not available. Install pyopenssl package.")
+                raise RuntimeError("OpenSSL Python bindings required for inline certificate support")
             except Exception as e:
-                raise RuntimeError(f"Failed to process inline certificate from cdw_cert: {e}")
-                
+                log.severe(f"Failed to process inline certificate from cdw_cert: {e}")
+                raise RuntimeError(f"Invalid cdw_cert configuration: {e}")
         elif os.path.isfile(cafile_cfg):
             # Certificate file path
-            log.info(f"Using certificate file: {cafile_cfg}")
+            log.info(f"Using certificate file from cdw_cert: {cafile_cfg}")
             cafile = cafile_cfg
         else:
+            # cdw_cert is provided but doesn't match expected formats
+            # Try to treat it as a certificate string that might work
+            log.warning(f"cdw_cert provided but doesn't appear to be a file path or inline PEM certificate.")
+            log.warning(f"Value appears to be: {cafile_cfg[:100]}... (first 100 chars)")
+            log.warning("Attempting to use cdw_cert as-is. If connection fails, verify the certificate format.")
+            
             # Try to create a temp file with the content
-            log.warning("Certificate doesn't appear to be a file path or inline PEM. Creating temp file...")
             try:
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem', mode='w')
                 tmp.write(cafile_cfg)
                 tmp.flush()
                 tmp.close()
                 cafile = tmp.name
-                log.info(f"Created temporary certificate file: {cafile}")
+                log.info(f"Created temporary certificate file from cdw_cert: {cafile}")
             except Exception as e:
-                raise RuntimeError(f"Failed to process cdw_cert value: {e}")
-    else:
-        log.warning("No cdw_cert provided. Attempting to generate certificate chain...")
-        if is_privatelink:
-            log.warning("For private links, certificate is typically required.")
+                log.severe(f"Failed to process cdw_cert value: {e}")
+                raise RuntimeError(f"Invalid cdw_cert configuration - could not process as file or inline cert: {e}")
         
-        # Try to generate certificate chain
-        cert_timeout = int(configuration.get("cert_generation_timeout", 30))
-        cert_file = generate_cert_chain(server, port, timeout=cert_timeout, allow_fallback=is_privatelink)
-        if cert_file:
-            cafile = cert_file
-            log.info(f"Using generated certificate file: {cafile}")
-            
-            # Read and log the certificate content from the file
-            try:
-                with open(cafile, 'r') as f:
-                    cert_content = f.read()
-                log.info("=" * 80)
-                log.info("CERTIFICATE CONTENT FROM GENERATED FILE:")
-                log.info("=" * 80)
-                log.info(cert_content)
-                log.info("=" * 80)
-            except Exception as e:
-                log.warning(f"Could not read certificate file for logging: {e}")
-        else:
-            log.warning("Certificate generation failed or returned None. Connection will proceed without certificate validation.")
+        # IMPORTANT: When cdw_cert is provided, we do NOT generate certificates
+        # This is especially important for private links where certificate generation may fail
+        log.info("cdw_cert is configured - skipping certificate generation (this is expected for private links)")
+    else:
+        # No cdw_cert provided: generate chain from server and port
+        if is_privatelink:
+            log.warning("Private link detected but cdw_cert not provided. Certificate generation may fail for private links.")
+            log.warning("For private links, it is recommended to provide cdw_cert in configuration to avoid certificate generation issues.")
+        
+        if not cert_server:
+            raise ValueError(f"Cannot generate cert chain: {cert_key} not provided")
+        log.info(f"cdw_cert not provided - generating certificate chain for {cert_server}:{cert_port} (SQL server: {server}:{port})")
+        if is_privatelink and cert_port == port:
+            log.warning(f"WARNING: For private links, certificate port should typically be different from SQL port. "
+                       f"Using {cert_port} for certificate generation. If this fails, ensure {cert_port_key} is set correctly.")
+        # For private links or when cert server differs from SQL server, allow fallback if certificate generation fails
+        is_privatelink_cert = 'privatelink' in (cert_server or server or '').lower()
+        cert_server_different = cert_server and cert_server != server
+        # Allow fallback for private links or when cert server is different (may not be accessible)
+        allow_cert_fallback = is_privatelink_cert or cert_server_different
+        
+        if is_privatelink_cert:
+            log.info("Private link certificate server detected - will use fallback certificate approach if generation fails")
+        
+        try:
+            cafile = generate_cert_chain(cert_server, cert_port, allow_fallback=allow_cert_fallback)
+            if cafile is None and allow_cert_fallback:
+                log.info("Certificate generation returned None (connection failed) - attempting root certificate fallback")
+                # Try to get root certificate as fallback
+                try:
+                    log.info("Fetching root certificate from DigiCert as fallback...")
+                    root_pem = requests.get(
+                        'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+                        timeout=10
+                    ).text
+                    if root_pem:
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                        tmp.write(root_pem.encode('utf-8'))
+                        tmp.flush()
+                        tmp.close()
+                        cafile = tmp.name
+                        log.info(f"Successfully created root certificate fallback file: {cafile}")
+                    else:
+                        log.warning("Root certificate fetch returned empty content. Will attempt connection without certificate validation.")
+                        cafile = None
+                except Exception as root_err:
+                    log.warning(f"Could not fetch root certificate: {root_err}. Will attempt connection without certificate validation.")
+                    cafile = None
+        except (ConnectionRefusedError, TimeoutError) as e:
+            if allow_cert_fallback:
+                log.warning(f"Certificate generation failed: {e}. Using fallback approach.")
+                # Try root certificate fallback
+                try:
+                    root_pem = requests.get(
+                        'https://cacerts.digicert.com/DigiCertGlobalRootG2.crt.pem',
+                        timeout=10
+                    ).text
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.pem')
+                    tmp.write(root_pem.encode('utf-8'))
+                    tmp.flush()
+                    tmp.close()
+                    cafile = tmp.name
+                    log.info(f"Using root certificate fallback: {cafile}")
+                except Exception as root_err:
+                    log.warning(f"Could not fetch root certificate: {root_err}. Will attempt connection without certificate validation.")
+                    cafile = None
+            else:
+                log.severe(f"Certificate generation failed: {e}")
+                log.severe("Troubleshooting steps:")
+                log.severe(f"  1. Verify {server_key} ({server}) and {port_key} ({port}) are correct")
+                log.severe(f"  2. Verify {cert_key} ({cert_server}) and {cert_port_key} ({cert_port}) are correct")
+                if cert_port != port:
+                    log.severe(f"     Note: Certificate port ({cert_port}) is different from SQL port ({port})")
+                log.severe(f"  3. Check network connectivity to certificate server: {cert_server}:{cert_port}")
+                log.severe(f"  4. Verify firewall rules allow connections to {cert_server}:{cert_port}")
+                log.severe(f"  5. For private links, ensure the certificate endpoint is accessible from this environment")
+                log.severe(f"  6. Check DNS resolution: nslookup {cert_server}")
+                raise
+        except Exception as e:
+            if allow_cert_fallback:
+                log.warning(f"Certificate generation error: {e}. Using fallback approach.")
+                cafile = None
+            else:
+                log.severe(f"Unexpected error during certificate generation: {e}")
+                raise RuntimeError(f"Certificate generation failed: {e}")
+    
+    # Attempt connection with retry logic
+    import pytds
+    # For private links, use longer default timeout
+    default_timeout = 60 if is_privatelink else 30
+    connection_timeout = int(configuration.get("connection_timeout", default_timeout))
+    
+    # For private links, use more retries with exponential backoff
+    max_connection_retries = int(configuration.get("connection_retries", 3 if is_privatelink else 1))
+    base_retry_delay = 2  # Start with 2 seconds
+    
+    log.info(f"Attempting connection with timeout: {connection_timeout}s, max retries: {max_connection_retries}")
+    if is_privatelink:
+        log.info("Private link connection - using extended timeout and retry logic")
     
     # Prepare connection parameters
-    connection_timeout = int(configuration.get("connection_timeout", CONNECTION_TIMEOUT))
-    
     conn_params = {
         'server': server,
         'database': database,
@@ -464,72 +589,130 @@ def connect_to_mssql(configuration: dict):
     
     # Handle certificate file for authentication
     if cafile and cafile != 'ignored':
+        # Using certificate file from cdw_cert or generated certificate
         conn_params['cafile'] = cafile
-        log.info(f"Using certificate file for authentication: {cafile}")
+        if cafile_cfg:
+            log.info(f"Using cdw_cert certificate file for MSSQL authentication: {cafile}")
+            log.info(f"Connecting to {server}:{port} with certificate-based authentication")
+        else:
+            log.info(f"Using generated certificate file: {cafile}")
     elif cafile == 'ignored':
-        log.info("Using inline certificate for authentication")
-        # Custom SSL context already configured via pytds.tls.create_context
+        # Using custom SSL context from inline cdw_cert (already configured via pytds.tls.create_context)
+        if cafile_cfg:
+            log.info(f"Using inline cdw_cert certificate for MSSQL authentication")
+            log.info(f"Connecting to {server}:{port} with certificate-based authentication")
+        # No need to set cafile - custom SSL context is already configured
     elif cafile is None:
-        log.warning("No certificate - connection will proceed without certificate validation")
+        # No certificate - connection will proceed without certificate validation
+        if cafile_cfg:
+            log.warning("cdw_cert was provided but could not be processed - connection will proceed without certificate validation")
+        else:
+            log.warning("No certificate file available - connection will proceed without certificate validation")
+        # pytds will handle this - we just don't pass cafile
     
     # Retry loop for connection attempts
-    max_connection_retries = int(configuration.get("connection_retries", MAX_RETRIES))
     last_error = None
-    
     for attempt in range(max_connection_retries):
         try:
             if attempt > 0:
-                delay = BASE_RETRY_DELAY * (2 ** (attempt - 1))
-                log.info(f"Retry attempt {attempt + 1}/{max_connection_retries} after {delay}s delay...")
-                import time
+                # Exponential backoff with jitter
+                delay = base_retry_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                log.info(f"Connection attempt {attempt + 1}/{max_connection_retries} after {delay:.2f}s delay")
                 time.sleep(delay)
             
-            log.info(f"Connection attempt {attempt + 1}/{max_connection_retries} to {server}:{port}...")
+            log.info(f"Connection attempt {attempt + 1}/{max_connection_retries} to {server}:{port}")
             conn = pytds.connect(**conn_params)
-            log.info("✓ Connection established successfully!")
+            log.info("Successfully connected to MSSQL database")
             return conn
-            
         except ConnectionRefusedError as e:
             last_error = e
-            log.warning(f"Connection refused: {e}")
+            log.warning(f"Connection refused on attempt {attempt + 1}/{max_connection_retries}: {e}")
             if attempt + 1 >= max_connection_retries:
+                # Final attempt failed
                 break
+            # Continue to retry
             continue
-            
         except TimeoutError as e:
             last_error = e
-            log.warning(f"Connection timeout: {e}")
+            log.warning(f"Connection timeout on attempt {attempt + 1}/{max_connection_retries}: {e}")
             if attempt + 1 >= max_connection_retries:
+                # Final attempt failed
                 break
+            # Continue to retry
             continue
-            
         except OSError as e:
             last_error = e
             error_str = str(e).lower()
+            # Check if it's a connection-related OSError
             if 'connection refused' in error_str or 'errno 111' in error_str:
-                log.warning(f"Connection refused (OSError): {e}")
+                log.warning(f"Connection refused (OSError) on attempt {attempt + 1}/{max_connection_retries}: {e}")
+                if attempt + 1 >= max_connection_retries:
+                    # Final attempt failed
+                    break
+                # Continue to retry
+                continue
             elif 'timeout' in error_str:
-                log.warning(f"Connection timeout (OSError): {e}")
+                log.warning(f"Connection timeout (OSError) on attempt {attempt + 1}/{max_connection_retries}: {e}")
+                if attempt + 1 >= max_connection_retries:
+                    # Final attempt failed
+                    break
+                # Continue to retry
+                continue
             else:
-                log.warning(f"Network error (OSError): {e}")
-            if attempt + 1 >= max_connection_retries:
-                break
-            continue
-            
+                # Other OSError - might be network related, retry
+                log.warning(f"Network error (OSError) on attempt {attempt + 1}/{max_connection_retries}: {e}")
+                if attempt + 1 >= max_connection_retries:
+                    # Final attempt failed
+                    break
+                # Continue to retry
+                continue
         except Exception as e:
+            # Non-retryable error
             last_error = e
-            log.warning(f"Connection error: {e}")
-            log.warning(f"Error type: {type(e).__name__}")
-            if attempt + 1 >= max_connection_retries:
-                break
-            continue
+            log.severe(f"Non-retryable connection error: {e}")
+            raise
     
-    # All retries exhausted
-    error_msg = f"Failed to establish connection to {server}:{port} after {max_connection_retries} attempts"
+    # All retries exhausted - provide detailed error messages
     if last_error:
-        error_msg += f": {last_error}"
-    log.severe(error_msg)
-    raise RuntimeError(error_msg)
+        error_str = str(last_error).lower()
+        if 'connection refused' in error_str or 'errno 111' in error_str:
+            log.severe(f"Connection refused to {server}:{port} after {max_connection_retries} attempts")
+            log.severe("Troubleshooting steps:")
+            log.severe(f"  1. Verify {server_key} = '{server}' is correct")
+            log.severe(f"  2. Verify {port_key} = '{port}' is correct")
+            log.severe(f"  3. Check network connectivity: Can you reach {server}:{port}?")
+            log.severe(f"  4. Verify firewall/security group rules allow connections")
+            if is_privatelink:
+                log.severe(f"  5. For private links, verify:")
+                log.severe(f"     - DNS resolution works: nslookup {server}")
+                log.severe(f"     - Private link endpoint is accessible from this environment")
+                log.severe(f"     - VPC peering/routing is configured correctly")
+                log.severe(f"     - Security groups allow traffic from this source")
+            else:
+                log.severe(f"  5. Check if SQL Server is running and listening on port {port}")
+            raise ConnectionRefusedError(f"Connection refused to {server}:{port} after {max_connection_retries} attempts: {last_error}")
+        elif 'timeout' in error_str:
+            log.severe(f"Connection timeout to {server}:{port} after {max_connection_retries} attempts (timeout: {connection_timeout}s)")
+            log.severe("Troubleshooting steps:")
+            log.severe(f"  1. Check network latency to {server}")
+            log.severe(f"  2. Verify firewall rules allow connections")
+            if is_privatelink:
+                log.severe(f"  3. For private links, verify network routing and VPC configuration")
+                log.severe(f"  4. Consider increasing connection_timeout in configuration (current: {connection_timeout}s)")
+            else:
+                log.severe(f"  3. Increase connection_timeout in configuration if needed (current: {connection_timeout}s)")
+            raise TimeoutError(f"Connection timeout to {server}:{port} after {max_connection_retries} attempts: {last_error}")
+        else:
+            log.severe(f"Connection error to {server}:{port} after {max_connection_retries} attempts: {last_error}")
+            if is_privatelink:
+                log.severe("For private links, verify:")
+                log.severe(f"  - DNS resolution: nslookup {server}")
+                log.severe(f"  - Network connectivity and routing")
+                log.severe(f"  - VPC peering configuration")
+            raise RuntimeError(f"Failed to connect to {server}:{port} after {max_connection_retries} attempts: {last_error}")
+    
+    # Should not reach here, but just in case
+    raise RuntimeError(f"Failed to connect to {server}:{port} - unknown error")
 
 
 def schema(configuration: dict):
@@ -671,6 +854,4 @@ if __name__ == "__main__":
     
     with open(config_path, 'r') as f:
         configuration = json.load(f)
-    
     connector.debug(configuration=configuration)
-
