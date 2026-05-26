@@ -1,7 +1,8 @@
 {
-	"hvr": {
+	"hvr":
+		{
 		"username": "",
-    "password":"",
-    "base_url":""
-  }
+	    "password":"",
+	    "base_url":""
+		}
 }
