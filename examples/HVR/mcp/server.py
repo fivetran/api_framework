@@ -2,7 +2,7 @@
 """
 HVR Single-File MCP Server
 ==========================
-A comprehensive, production-grade MCP (Model Context Protocol) server consolidating 
+A comprehensive MCP (Model Context Protocol) server consolidating 
 HVR API connectivity, state management, and replication workflow automation.
 
 Designed to read credentials from `/config.json` with robust fallbacks, support 
