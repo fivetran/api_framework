@@ -11,7 +11,7 @@ The HVR MCP Server exposes replication pipelines and DDL/schema evolution capabi
 ```
                   +----------------------------------------------+
                   |                 FastMCP Server               |
-                  |             [server.py]              |
+                  |                   [server.py]                |
                   +----------------------------------------------+
                                          ||
                       Calls singleton client helper get_client()
