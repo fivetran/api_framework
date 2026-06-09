@@ -11,7 +11,7 @@ The HVR MCP Server exposes replication pipelines and DDL/schema evolution capabi
 ```
                   +----------------------------------------------+
                   |                 FastMCP Server               |
-                  |             [hvr_mcp_server.py]              |
+                  |             [server.py]              |
                   +----------------------------------------------+
                                          ||
                       Calls singleton client helper get_client()
@@ -62,7 +62,7 @@ Always check layout discrepancies using `adapt_check_tables` before executing `a
 
 ## 3. How to customize and add new tools
 
-This walkthrough demonstrates how to add a new tool to [hvr_mcp_server.py](file:///Users/elijah.davis/Documents/code/api/hvr/hvr_mcp/hvr_mcp_server.py).
+This walkthrough demonstrates how to add a new tool to server.py.
 
 ### Example: Adding `get_channel_actions`
 
@@ -109,13 +109,13 @@ To verify your custom tool behaves correctly, execute the following diagnostic t
 Execute the server locally, feeding it a JSON-RPC payload matching your new tool name over standard input:
 
 ```bash
-(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"tester","version":"1.0"}}}'; echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'; echo '{"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "get_channel_actions", "arguments": {"channel_name": "test_ch2"}}, "id": 2}') | python3 /Users/elijah.davis/Documents/code/api/hvr/hvr_mcp/hvr_mcp_server.py
+(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"tester","version":"1.0"}}}'; echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'; echo '{"jsonrpc": "2.0", "method": "tools/call", "params": {"name": "get_channel_actions", "arguments": {"channel_name": "test_ch2"}}, "id": 2}') | python3 /server.py
 ```
 
 ### Visual verification with MCP inspector
 Start the MCP Inspector instance to test your new tool visually inside a local web UI:
 
 ```bash
-npx -y @modelcontextprotocol/inspector python3 /Users/elijah.davis/Documents/code/api/hvr/hvr_mcp/hvr_mcp_server.py
+npx -y @modelcontextprotocol/inspector python3 /server.py
 ```
 This launches a browser interface listing all registered tools (including your new `get_channel_actions` tool) allowing you to execute it and review JSON responses directly.
