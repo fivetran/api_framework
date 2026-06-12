@@ -38,7 +38,7 @@ exit
 
 ## Step 2: Deploy your script
 
-Transfer the `mcp_quickstart.py` script from your local machine to the EC2 instance.
+Transfer the quickstart MCP `server.py` script from your local machine to the EC2 instance.
 
 Example command from your **local machine**:
 
@@ -52,7 +52,7 @@ scp -i /path/to/your-key.pem /Users/name/Documents/code/api/mcp/server.py ec2-us
 
 You can verify that the server runs and authenticates properly by testing it using the official MCP Inspector. Since the script uses environment variables for credentials, we pass them inline in the SSH command block.
 
-Run this exact command on your **local machine**:
+Example command on your **local machine**:
 
 ```bash
 npx -y @modelcontextprotocol/inspector ssh -i /path/to/your-key.pem ec2-user@<ec2-ip-address> "FIVETRAN_API_KEY=your_key_here FIVETRAN_API_SECRET=your_secret_here python3 /home/ec2-user/server.py"
