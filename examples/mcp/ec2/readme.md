@@ -67,13 +67,13 @@ Open the local URL generated (usually `http://localhost:5173`) in your browser t
 Add the hosted MCP server to your local clients by passing the environment variables inline in the SSH configuration.
 
 ### VS Code configuration
-If you are using an AI coding assistant in VS Code that supports MCP (like Cline or Roo Code), configure it via the `mcp.json` file.
-
-1. Open the VS Code command palette (`Cmd+Shift+P` on Mac, `Ctrl+Shift+P` on Windows/Linux).
-2. Type and select **Cline: MCP Servers** (or the equivalent for your extension).
-3. Add your EC2 server configuration:
+If you are using an AI coding assistant in VS Code that supports MCP, configure it via the `mcp.json` file.
 
 File location: ~/Library/Application Support/Code/User/mcp.json
+
+1. Open the VS Code command palette (`Cmd+Shift+P` on Mac, `Ctrl+Shift+P` on Windows/Linux).
+2. Type and select **MCP Servers** (or the equivalent for your extension).
+3. Add your EC2 server configuration:
 
 ```json
 {
